@@ -5,8 +5,9 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { processAlive, processHealth, spawnSeed, spawnService, stopService, waitForSeed, waitForService } from "./process.js";
 import { listReceipts, readReceipt, reserveSession, sessionPath, writeReceipt } from "./state.js";
+import { issueCommand } from "./issue.js";
 function usage() {
-    throw new Error("Usage: localdev startup [fixture] [--project DIR] [--adapter FILE] | status [ID] | stop ID");
+    throw new Error("Usage: localdev startup [fixture] [--project DIR] [--adapter FILE] | status [ID] | stop ID | issue bug|request [--input FILE] [--project DIR] [--session ID] [--cli-ref SHA] [--submit]");
 }
 function option(args, name) {
     const index = args.indexOf(name);
@@ -188,6 +189,8 @@ async function main() {
         await status(args[0]);
     else if (command === "stop")
         await stop(args[0]);
+    else if (command === "issue")
+        await issueCommand(args);
     else
         usage();
 }
