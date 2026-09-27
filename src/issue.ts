@@ -85,10 +85,10 @@ function cliSourceCommit(): string | null {
 async function installedCliCommit(): Promise<string | null> {
   const sourceCommit = cliSourceCommit();
   if (sourceCommit) return sourceCommit;
-  try {
-    const info = JSON.parse(await fs.readFile(new URL("../dist/build-info.json", import.meta.url), "utf8")) as { commit?: unknown };
-    if (typeof info.commit === "string" && /^[0-9a-f]{40}$/.test(info.commit)) return info.commit;
-  } catch { /* The source checkout may not have a stamp yet. */ }
+  const installedPath = fileURLToPath(import.meta.url);
+  const storeFolder = installedPath.split(path.sep).find((part) => part.startsWith("@local-tools+cli@git+"));
+  const match = storeFolder?.match(/localdev-cli\.git\+([0-9a-f]{40})$/);
+  if (match) return match[1];
   return null;
 }
 

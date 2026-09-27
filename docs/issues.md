@@ -2,8 +2,9 @@
 
 Run the globally installed command from the affected project's checkout. It
 adds that checkout's path and commit, the CLI version, and the runtime to the
-report. Git installs stamp their CLI commit into the package. If that stamp is
-unavailable, pass the installed commit with `--cli-ref` before publishing.
+report. A pnpm Git install provides its pinned CLI commit through its package
+path. With another install method, pass the commit with `--cli-ref` before
+publishing if the draft shows `unknown`.
 
 For a person at a terminal, `localdev issue bug` or `localdev issue request`
 asks for the details, shows the formatted draft, then asks whether to publish.

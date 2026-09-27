@@ -10,11 +10,9 @@
   "files": [
     "dist",
     "docs",
-    "README.md",
-    "scripts"
+    "README.md"
   ],
   "scripts": {
-    "prepare": "node scripts/stamp-source.mjs",
     "build": "tsc -p tsconfig.json",
     "test": "pnpm build && node --test test/*.test.mjs"
   },

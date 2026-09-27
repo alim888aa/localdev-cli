@@ -79,7 +79,6 @@ test("installed CLI does not mistake the host project's commit for its own", asy
     const installed = path.join(project, "node_modules", "@local-tools", "cli");
     await mkdir(installed, { recursive: true });
     await cp(path.join(root, "dist"), path.join(installed, "dist"), { recursive: true });
-    await rm(path.join(installed, "dist", "build-info.json"), { force: true });
     await cp(path.join(root, "package.json"), path.join(installed, "package.json"));
     await exec("git", ["init", "-q", project]);
     await exec("git", ["-C", project, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-q", "--allow-empty", "-m", "initial"]);
@@ -96,8 +95,11 @@ test("installed CLI does not mistake the host project's commit for its own", asy
       /Cannot submit without the installed localdev Git commit/,
     );
     const cliRef = "a".repeat(40);
-    await writeFile(path.join(installed, "dist", "build-info.json"), JSON.stringify({ commit: cliRef }));
-    const stamped = await exec(process.execPath, [path.join(installed, "dist", "cli.js"), "issue", "bug", "--input", input], { cwd: project });
+    const pnpmInstall = path.join(project, "node_modules", ".pnpm", `@local-tools+cli@git+https+++github.com+alim888aa+localdev-cli.git+${cliRef}`, "node_modules", "@local-tools", "cli");
+    await mkdir(pnpmInstall, { recursive: true });
+    await cp(path.join(root, "dist"), path.join(pnpmInstall, "dist"), { recursive: true });
+    await cp(path.join(root, "package.json"), path.join(pnpmInstall, "package.json"));
+    const stamped = await exec(process.execPath, [path.join(pnpmInstall, "dist", "cli.js"), "issue", "bug", "--input", input], { cwd: project });
     assert.ok(stamped.stdout.includes(`localdev Git ref: \`${cliRef}\``));
   } finally {
     await rm(dir, { recursive: true, force: true });
