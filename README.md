@@ -36,6 +36,16 @@ gh issue create -R alim888aa/localdev-cli --template bug_report.md
 Use `tool_request.md` for a new capability. GitHub access to this private repo
 is required.
 
+Agents can use the shared [localdev issue-maker skill](skills/localdev-issue-maker/SKILL.md)
+to check evidence, search for duplicates, and write the issue in this format.
+Install it once per Codex user from this private repo, then project-specific
+agent guides can point to `$localdev-issue-maker`:
+
+```sh
+python3 ~/.codex/skills/.system/skill-installer/scripts/install-skill-from-github.py \
+  --repo alim888aa/localdev-cli --path skills/localdev-issue-maker --method git
+```
+
 Keep one problem or request per issue. For bugs, include the project and
 checkout commit, the installed CLI commit, the exact command, expected and
 actual result, a repeatable repro, and a session ID if available. Say whether

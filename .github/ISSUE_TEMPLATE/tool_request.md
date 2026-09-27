@@ -8,6 +8,10 @@ title: "request: "
 
 <!-- Which project and verification task needs this? Describe the current manual steps. -->
 
+## Impact
+
+<!-- What work is blocked or repeated, and how often? Use Unknown when unmeasured. -->
+
 ## Desired result
 
 <!-- What should the agent be able to run or see? Give one concrete example. -->
