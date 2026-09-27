@@ -25,16 +25,18 @@ CLI development, run `pnpm install`, `pnpm build`, and `pnpm test` here.
 
 ## File an issue
 
-Use this repo's [Bug report](.github/ISSUE_TEMPLATE/bug_report.md) or
-[Tool request](.github/ISSUE_TEMPLATE/tool_request.md) template. Project agents
-can open one from their own checkout with:
+From any project checkout, run `localdev issue bug` or
+`localdev issue request`. The command formats the report with checkout details
+and applies the `bug` or `enhancement` label when published. It previews the
+report before asking a person to publish. Unattended agents can supply a JSON
+file and explicitly publish:
 
 ```sh
-gh issue create -R alim888aa/localdev-cli --template bug_report.md
+localdev issue bug --input report.json --submit
 ```
 
-Use `tool_request.md` for a new capability. GitHub access to this private repo
-is required.
+See [issue command examples and input fields](docs/issues.md). GitHub CLI
+(`gh`) access to this private repo is required to publish.
 
 Agents can use the shared [localdev issue-maker skill](skills/localdev-issue-maker/SKILL.md)
 to check evidence, search for duplicates, and write the issue in this format.
@@ -46,14 +48,9 @@ python3 ~/.codex/skills/.system/skill-installer/scripts/install-skill-from-githu
   --repo alim888aa/localdev-cli --path skills/localdev-issue-maker --method git
 ```
 
-Keep one problem or request per issue. For bugs, include the project and
-checkout commit, the installed CLI commit, the exact command, expected and
-actual result, a repeatable repro, and a session ID if available. Say whether
-`localdev stop <id>` cleaned up. For requests, describe the agent task and the
-result the tool should provide; say whether a project adapter could handle it.
-Remove passwords, tokens, private credential files, and personal data from
-logs or receipts before attaching them. Link project-specific issues in their
-own repo when the fault is in that project's adapter or fixture.
+Keep one problem or request per issue. Remove passwords, tokens, private
+credential files, and personal data before submitting. Link project-specific
+issues in their own repo when the fault is in that project's adapter or fixture.
 
 The default adapter is `<project>/local.adapter.mjs`. Pass `--adapter FILE` to
 use another file. The adapter exports `ports` and `createSession(context)`:
