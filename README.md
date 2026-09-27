@@ -23,6 +23,28 @@ localdev stop <session-id>
 See [the adapter guide](docs/adapter.md) when adding another project. For local
 CLI development, run `pnpm install`, `pnpm build`, and `pnpm test` here.
 
+## File an issue
+
+Use this repo's [Bug report](.github/ISSUE_TEMPLATE/bug_report.md) or
+[Tool request](.github/ISSUE_TEMPLATE/tool_request.md) template. Project agents
+can open one from their own checkout with:
+
+```sh
+gh issue create -R alim888aa/localdev-cli --template bug_report.md
+```
+
+Use `tool_request.md` for a new capability. GitHub access to this private repo
+is required.
+
+Keep one problem or request per issue. For bugs, include the project and
+checkout commit, the installed CLI commit, the exact command, expected and
+actual result, a repeatable repro, and a session ID if available. Say whether
+`localdev stop <id>` cleaned up. For requests, describe the agent task and the
+result the tool should provide; say whether a project adapter could handle it.
+Remove passwords, tokens, private credential files, and personal data from
+logs or receipts before attaching them. Link project-specific issues in their
+own repo when the fault is in that project's adapter or fixture.
+
 The default adapter is `<project>/local.adapter.mjs`. Pass `--adapter FILE` to
 use another file. The adapter exports `ports` and `createSession(context)`:
 
