@@ -2,7 +2,8 @@
 
 Run the globally installed command from the affected project's checkout. It
 adds that checkout's path and commit, the CLI version, and the runtime to the
-report. If the installed CLI's Git commit is known, pass it with `--cli-ref`.
+report. Git installs stamp their CLI commit into the package. If that stamp is
+unavailable, pass the installed commit with `--cli-ref` before publishing.
 
 For a person at a terminal, `localdev issue bug` or `localdev issue request`
 asks for the details, shows the formatted draft, then asks whether to publish.
@@ -23,15 +24,16 @@ For an unattended agent, put the details in a JSON file:
 ```
 
 ```sh
-localdev issue bug --input report.json --session <session-id> --cli-ref <installed-commit>
-localdev issue bug --input report.json --session <session-id> --cli-ref <installed-commit> --submit
+localdev issue bug --input report.json --session <session-id>
+localdev issue bug --input report.json --session <session-id> --submit
 ```
 
 The first command prints a draft. `--submit` creates an issue in the private
 `alim888aa/localdev-cli` repo, applies the `bug` label, and checks the saved
 title and label. The session option adds only the ID, fixture, state, and
 checkout commit; it never attaches credential files or full receipts. Omit
-`--session` when no session was created.
+`--session` when no session was created. Submission is refused when the CLI
+commit is unknown; use `--cli-ref <installed-commit>` in that case.
 
 For a request, use `localdev issue request` with an input file containing
 `title`, `task`, `desired`, `whyShared`, and `acceptance`. Optional `impact` and

@@ -87,6 +87,18 @@ function cliSourceCommit() {
         return null;
     }
 }
+async function installedCliCommit() {
+    const sourceCommit = cliSourceCommit();
+    if (sourceCommit)
+        return sourceCommit;
+    try {
+        const info = JSON.parse(await fs.readFile(new URL("../dist/build-info.json", import.meta.url), "utf8"));
+        if (typeof info.commit === "string" && /^[0-9a-f]{40}$/.test(info.commit))
+            return info.commit;
+    }
+    catch { /* The source checkout may not have a stamp yet. */ }
+    return null;
+}
 async function collectFields(kind, input) {
     if (input) {
         const value = JSON.parse(await fs.readFile(path.resolve(input), "utf8"));
@@ -184,14 +196,19 @@ export async function issueCommand(args) {
         throw new Error(`Session ${sessionId} belongs to ${receipt.projectRoot}; use --project to select that checkout`);
     }
     const packageJson = JSON.parse(await fs.readFile(new URL("../package.json", import.meta.url), "utf8"));
+    const cliRef = options.cliRef ?? await installedCliCommit();
+    if (cliRef && !/^[0-9a-f]{7,40}$/.test(cliRef))
+        throw new Error("--cli-ref must be a Git SHA (7 to 40 lowercase hex characters)");
     const report = render(kind, fields, {
         projectRoot,
         projectCommit: gitCommit(projectRoot),
         cliVersion: packageJson.version,
-        cliRef: options.cliRef ?? cliSourceCommit(),
+        cliRef,
         session: receipt ? { id: receipt.id, fixture: receipt.fixture, state: receipt.state, commit: receipt.commit } : null,
     });
     if (options.submit) {
+        if (!cliRef)
+            throw new Error("Cannot submit without the installed localdev Git commit; pass --cli-ref SHA");
         const url = await publish(report.title, report.body, report.label);
         console.log(`Created ${url} [${report.label}]`);
         return;
@@ -202,6 +219,8 @@ export async function issueCommand(args) {
         try {
             const answer = await rl.question("Publish this issue to the private localdev repo? [y/N] ");
             if (answer.trim().toLowerCase() === "y") {
+                if (!cliRef)
+                    throw new Error("Cannot submit without the installed localdev Git commit; rerun with --cli-ref SHA");
                 const url = await publish(report.title, report.body, report.label);
                 console.log(`Created ${url} [${report.label}]`);
                 return;

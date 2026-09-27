@@ -20,10 +20,10 @@ test("issue draft formats project context without publishing", async () => {
       expected: "Its listener closes.", steps: ["Start a session", "Stop it", "Request its URL"],
       impact: "Another agent may test the wrong app.",
     }));
-    const { stdout } = await exec(process.execPath, [cli, "issue", "bug", "--input", input, "--cli-ref", "abc123"], { cwd: root });
+    const { stdout } = await exec(process.execPath, [cli, "issue", "bug", "--input", input, "--cli-ref", "abc1234"], { cwd: root });
     assert.match(stdout, /# bug: stop leaves a listener/);
     assert.match(stdout, /1\. Start a session\n2\. Stop it/);
-    assert.match(stdout, /localdev Git ref: `abc123`/);
+    assert.match(stdout, /localdev Git ref: `abc1234`/);
     assert.match(stdout, /Label: bug/);
     assert.match(stdout, /Draft only/);
   } finally {
@@ -79,6 +79,7 @@ test("installed CLI does not mistake the host project's commit for its own", asy
     const installed = path.join(project, "node_modules", "@local-tools", "cli");
     await mkdir(installed, { recursive: true });
     await cp(path.join(root, "dist"), path.join(installed, "dist"), { recursive: true });
+    await rm(path.join(installed, "dist", "build-info.json"), { force: true });
     await cp(path.join(root, "package.json"), path.join(installed, "package.json"));
     await exec("git", ["init", "-q", project]);
     await exec("git", ["-C", project, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-q", "--allow-empty", "-m", "initial"]);
@@ -90,6 +91,14 @@ test("installed CLI does not mistake the host project's commit for its own", asy
     const { stdout } = await exec(process.execPath, [path.join(installed, "dist", "cli.js"), "issue", "bug", "--input", input], { cwd: project });
     assert.match(stdout, /Project commit: `[0-9a-f]{40}`/);
     assert.match(stdout, /localdev Git ref: `unknown`/);
+    await assert.rejects(
+      exec(process.execPath, [path.join(installed, "dist", "cli.js"), "issue", "bug", "--input", input, "--submit"], { cwd: project }),
+      /Cannot submit without the installed localdev Git commit/,
+    );
+    const cliRef = "a".repeat(40);
+    await writeFile(path.join(installed, "dist", "build-info.json"), JSON.stringify({ commit: cliRef }));
+    const stamped = await exec(process.execPath, [path.join(installed, "dist", "cli.js"), "issue", "bug", "--input", input], { cwd: project });
+    assert.ok(stamped.stdout.includes(`localdev Git ref: \`${cliRef}\``));
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

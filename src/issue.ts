@@ -82,6 +82,16 @@ function cliSourceCommit(): string | null {
   } catch { return null; }
 }
 
+async function installedCliCommit(): Promise<string | null> {
+  const sourceCommit = cliSourceCommit();
+  if (sourceCommit) return sourceCommit;
+  try {
+    const info = JSON.parse(await fs.readFile(new URL("../dist/build-info.json", import.meta.url), "utf8")) as { commit?: unknown };
+    if (typeof info.commit === "string" && /^[0-9a-f]{40}$/.test(info.commit)) return info.commit;
+  } catch { /* The source checkout may not have a stamp yet. */ }
+  return null;
+}
+
 async function collectFields(kind: Kind, input?: string): Promise<Fields> {
   if (input) {
     const value: unknown = JSON.parse(await fs.readFile(path.resolve(input), "utf8"));
@@ -181,14 +191,17 @@ export async function issueCommand(args: string[]): Promise<void> {
     throw new Error(`Session ${sessionId} belongs to ${receipt.projectRoot}; use --project to select that checkout`);
   }
   const packageJson = JSON.parse(await fs.readFile(new URL("../package.json", import.meta.url), "utf8")) as { version: string };
+  const cliRef = (options.cliRef as string | undefined) ?? await installedCliCommit();
+  if (cliRef && !/^[0-9a-f]{7,40}$/.test(cliRef)) throw new Error("--cli-ref must be a Git SHA (7 to 40 lowercase hex characters)");
   const report = render(kind, fields, {
     projectRoot,
     projectCommit: gitCommit(projectRoot),
     cliVersion: packageJson.version,
-    cliRef: (options.cliRef as string | undefined) ?? cliSourceCommit(),
+    cliRef,
     session: receipt ? { id: receipt.id, fixture: receipt.fixture, state: receipt.state, commit: receipt.commit } : null,
   });
   if (options.submit) {
+    if (!cliRef) throw new Error("Cannot submit without the installed localdev Git commit; pass --cli-ref SHA");
     const url = await publish(report.title, report.body, report.label);
     console.log(`Created ${url} [${report.label}]`);
     return;
@@ -199,6 +212,7 @@ export async function issueCommand(args: string[]): Promise<void> {
     try {
       const answer = await rl.question("Publish this issue to the private localdev repo? [y/N] ");
       if (answer.trim().toLowerCase() === "y") {
+        if (!cliRef) throw new Error("Cannot submit without the installed localdev Git commit; rerun with --cli-ref SHA");
         const url = await publish(report.title, report.body, report.label);
         console.log(`Created ${url} [${report.label}]`);
         return;
