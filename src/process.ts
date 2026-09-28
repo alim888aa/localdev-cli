@@ -8,7 +8,7 @@ import type { CommandSpec, OwnedProcess, ServiceSpec } from "./types.js";
 
 const supervisorPath = fileURLToPath(new URL("./supervisor.js", import.meta.url));
 
-function birthOf(pid: number): string | null {
+export function birthOf(pid: number): string | null {
   try {
     return execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], { encoding: "utf8" }).trim() || null;
   } catch { return null; }

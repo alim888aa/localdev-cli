@@ -4,7 +4,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { createInterface } from "node:readline/promises";
 import { pathToFileURL } from "node:url";
-import { processAlive, processHealth, spawnSeed, spawnService, stopService, waitForSeed, waitForService } from "./process.js";
+import { birthOf, processAlive, processHealth, spawnSeed, spawnService, stopService, waitForSeed, waitForService } from "./process.js";
 import { listReceipts, readReceipt, reserveSession, sessionPath, writeReceipt } from "./state.js";
 import { issueCommand } from "./issue.js";
 import { helpFor } from "./help.js";
@@ -53,19 +53,13 @@ function safeSessionOrigin(urls: Record<string, string>): string {
   } catch { return "URL in status"; }
 }
 
-function pidExists(pid: number): boolean {
-  if (!Number.isInteger(pid) || pid <= 0) return false;
-  try { process.kill(pid, 0); return true; } catch { return false; }
-}
-
 async function matchingSessions(receipts: SessionReceipt[], root: string, fixture: string): Promise<SessionReceipt[]> {
   const candidates = receipts.filter((item) => item.fixture === fixture);
   const matches = await Promise.all(candidates.map(async (item) => {
     const itemRoot = await fs.realpath(item.projectRoot).catch(() => path.resolve(item.projectRoot));
     if (itemRoot !== root) return null;
     if (item.state === "starting") {
-      const age = Date.now() - Date.parse(item.createdAt);
-      return age >= 0 && age < 30 * 60_000 && pidExists(item.ownerPid) ? item : null;
+      return item.ownerBirth && birthOf(item.ownerPid) === item.ownerBirth ? item : null;
     }
     if (item.state !== "ready" && item.state !== "stopping" && item.state !== "failed") return null;
     if (!item.processes.length) return null;
@@ -174,6 +168,8 @@ async function startup(args: string[]): Promise<void> {
   if (!fixture || typeof fixture !== "string" || !fixture.trim()) {
     throw new Error(`No fixture named. Set defaultFixture in ${adapterPath} or run localdev startup <fixture>`);
   }
+  const ownerBirth = birthOf(process.pid);
+  if (!ownerBirth) throw new Error("Could not verify startup process identity");
   let choice = startupChoice(args);
   let receipt: SessionReceipt;
   for (;;) {
@@ -181,10 +177,13 @@ async function startup(args: string[]): Promise<void> {
       receipt = await reserveSession(adapter.ports, (id, dir, ports) => ({
         id, fixture, projectRoot, commit: gitCommit(projectRoot), adapterPath,
         sessionDir: dir, dataDir: path.join(dir, "data"), ports,
-        urls: {}, processes: [], state: "starting", ownerPid: process.pid,
+        urls: {}, processes: [], state: "starting", ownerPid: process.pid, ownerBirth,
         createdAt: new Date().toISOString(),
       }), async (receipts) => {
         const matches = await matchingSessions(receipts, projectRoot, fixture);
+        if (choice.replaceId && !matches.some((item) => item.id === choice.replaceId)) {
+          throw new Error(`Cannot replace ${choice.replaceId}: no healthy matching session for this checkout and fixture`);
+        }
         if (!matches.length || choice.parallel) return;
         if (!choice.replace) throw new DuplicateSessionError(matches);
         const selected = choice.replaceId

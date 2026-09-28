@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile, execFileSync, spawn } from "node:child_process";
-import { mkdir, mkdtemp, readFile, readdir, rm, symlink } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -123,6 +123,49 @@ test("concurrent duplicate startup allocates only one session", async () => {
     assert.equal(receipt.id, completed[0].value.id);
   } finally {
     if (receipt) await run("stop", receipt.id).catch(() => undefined);
+    await rm(state, { recursive: true, force: true });
+  }
+});
+
+test("explicit replacement rejects an unmatched session ID before allocation", async () => {
+  const state = await mkdtemp(path.join(os.tmpdir(), "local-cli-unmatched-replace-"));
+  const env = { ...process.env, LOCAL_CLI_STATE_DIR: state };
+  const run = async (...args) => {
+    const { stdout } = await exec(process.execPath, [cli, ...args], { env, cwd: root });
+    return JSON.parse(stdout);
+  };
+  try {
+    await assert.rejects(run("startup", "base", "--replace", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "--project", root, "--adapter", adapter), /no healthy matching session/);
+    assert.deepEqual(await run("status"), []);
+  } finally {
+    await rm(state, { recursive: true, force: true });
+  }
+});
+
+test("starting receipt with a reused PID does not block startup", async () => {
+  const state = await mkdtemp(path.join(os.tmpdir(), "local-cli-reused-pid-"));
+  const env = { ...process.env, LOCAL_CLI_STATE_DIR: state };
+  const run = async (...args) => {
+    const { stdout } = await exec(process.execPath, [cli, ...args], { env, cwd: root });
+    return JSON.parse(stdout);
+  };
+  const staleId = "11111111-2222-3333-4444-555555555555";
+  let fresh;
+  try {
+    const staleDir = path.join(state, "sessions", staleId);
+    await mkdir(staleDir, { recursive: true });
+    await writeFile(path.join(staleDir, "receipt.json"), JSON.stringify({
+      id: staleId, fixture: "base", projectRoot: root, commit: null,
+      adapterPath: adapter, sessionDir: staleDir, dataDir: path.join(staleDir, "data"),
+      ports: {}, urls: {}, processes: [], state: "starting",
+      ownerPid: process.pid, ownerBirth: "an earlier process with this PID",
+      createdAt: new Date().toISOString(),
+    }));
+    fresh = await run("startup", "base", "--project", root, "--adapter", adapter);
+    assert.equal(fresh.state, "ready");
+    assert.notEqual(fresh.id, staleId);
+  } finally {
+    if (fresh) await run("stop", fresh.id).catch(() => undefined);
     await rm(state, { recursive: true, force: true });
   }
 });

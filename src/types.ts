@@ -71,6 +71,7 @@ export interface SessionReceipt {
   processes: OwnedProcess[];
   state: "starting" | "ready" | "failed" | "stopping";
   ownerPid: number;
+  ownerBirth?: string;
   createdAt: string;
   error?: string;
 }

@@ -5,7 +5,7 @@ import net from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 const supervisorPath = fileURLToPath(new URL("./supervisor.js", import.meta.url));
-function birthOf(pid) {
+export function birthOf(pid) {
     try {
         return execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], { encoding: "utf8" }).trim() || null;
     }
