@@ -40,6 +40,12 @@ test("concurrent sessions have separate ports/data and stop independently", asyn
     assert.notEqual(first.id, second.id);
     assert.equal(first.state, "ready");
     assert.equal(second.state, "ready");
+    assert.equal(first.processes[0].launch, "next dev --turbopack");
+    assert.equal(second.processes[0].launch, "vite");
+    assert.equal((await run("status", first.id))[0].processes[0].launchMode, "next-turbopack");
+    assert.equal((await run("status", second.id))[0].processes[0].launchMode, "vite");
+    assert.ok(!JSON.stringify(first).includes("private-test-value"));
+    assert.ok(!JSON.stringify(second).includes("private-test-value"));
     assert.equal(new Set([...Object.values(first.ports), ...Object.values(second.ports)]).size, 4);
     assert.notEqual(first.dataDir, second.dataDir);
     assert.equal(await readFile(path.join(first.dataDir, "seed.txt"), "utf8"), "ready\n");

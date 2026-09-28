@@ -34,6 +34,21 @@ function validateCleanupPaths(paths: string[], id: string, root: string): void {
   }
 }
 
+const launchModeDescriptions: Record<string, string> = {
+  "next-turbopack": "next dev --turbopack",
+  "next-webpack": "next dev --webpack",
+  vite: "vite",
+  "tanstack-start": "tanstack start",
+};
+
+function launchDescription(mode: string | undefined): string | null {
+  if (mode === undefined) return null;
+  if (!/^[a-z][a-z0-9-]{0,63}$/.test(mode)) {
+    throw new Error("Service launchMode must be a short, lowercase mode ID without arguments or secrets");
+  }
+  return launchModeDescriptions[mode] ?? mode;
+}
+
 async function cleanupPaths(receipt: SessionReceipt): Promise<void> {
   validateCleanupPaths(receipt.cleanupPaths ?? [], receipt.id, receipt.projectRoot);
   for (const item of receipt.cleanupPaths ?? []) await fs.rm(item, { recursive: true, force: true });
@@ -45,6 +60,8 @@ async function publicReceipt(receipt: SessionReceipt): Promise<object> {
     const health = await processHealth(record);
     return {
       name: record.name,
+      launchMode: record.launchMode ?? null,
+      launch: launchDescription(record.launchMode),
       pid: record.pid,
       guardPid: record.guardPid,
       birth: record.birth,
@@ -105,6 +122,7 @@ async function startup(args: string[]): Promise<void> {
     if (new Set(plan.services.map((item) => item.name)).size !== plan.services.length) {
       throw new Error("Service names must be unique");
     }
+    for (const service of plan.services) launchDescription(service.launchMode);
     receipt.urls = plan.urls ?? {};
     receipt.credentialsFile = plan.credentialsFile;
     await writeReceipt(receipt);
@@ -117,6 +135,7 @@ async function startup(args: string[]): Promise<void> {
         return { name, port, host: service.readyHost ?? "127.0.0.1" };
       });
       const { owned, child } = await spawnService(service, projectRoot, receipt.sessionDir);
+      owned.launchMode = service.launchMode;
       owned.readyPort = checks[0].port;
       owned.readyHost = checks[0].host;
       owned.readyChecks = checks;

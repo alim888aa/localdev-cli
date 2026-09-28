@@ -43,7 +43,8 @@ export default {
         {
           name: "web",
           command: path.join(projectRoot, "node_modules", ".bin", "next"),
-          args: ["dev", "--port", String(ports.web)],
+          args: ["dev", "--turbopack", "--port", String(ports.web)],
+          launchMode: "next-turbopack",
           cwd: projectRoot,
           readyPort: "web",
         },
@@ -71,3 +72,10 @@ candidate port. It leaves existing servers running. A separate
 `LOCAL_CLI_STATE_DIR` opts out of the shared lock, so avoid setting it in normal
 agent workflows. A service that ignores its assigned port can still collide;
 the adapter must wire every port it declares.
+
+`launchMode` is an optional, safe mode ID shown in startup and status. Built-in
+IDs `next-turbopack`, `next-webpack`, `vite`, and `tanstack-start` display the
+matching dev command; other short lowercase IDs display as written. This field
+is a label for agents, not the command the CLI executes. Never put arguments,
+environment values, credentials, or tokens in it. If omitted, status shows
+`launch: null` rather than guessing from a command that may contain secrets.
