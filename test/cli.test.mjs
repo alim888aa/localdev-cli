@@ -97,6 +97,25 @@ test("separate projects share one allocator and stop independently", async () =>
   }
 });
 
+test("custom launch mode cannot resolve an inherited object property", async () => {
+  const state = await mkdtemp(path.join(os.tmpdir(), "local-cli-custom-mode-"));
+  const env = { ...process.env, LOCAL_CLI_STATE_DIR: state };
+  const run = async (...args) => {
+    const { stdout } = await exec(process.execPath, [cli, ...args], { env, cwd: root });
+    return JSON.parse(stdout);
+  };
+  let receipt;
+  try {
+    receipt = await run("startup", "custom-mode", "--project", root, "--adapter", adapter);
+    assert.equal(receipt.processes[0].launch, "constructor");
+    const [later] = await run("status", receipt.id);
+    assert.equal(later.processes[0].launch, "constructor");
+  } finally {
+    if (receipt) await run("stop", receipt.id).catch(() => undefined);
+    await rm(state, { recursive: true, force: true });
+  }
+});
+
 test("stop removes only the session's generated directory", async () => {
   const state = await mkdtemp(path.join(os.tmpdir(), "local-cli-cleanup-"));
   const env = { ...process.env, LOCAL_CLI_STATE_DIR: state };

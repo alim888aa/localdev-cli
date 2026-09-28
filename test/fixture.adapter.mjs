@@ -21,7 +21,7 @@ export default {
       await new Promise((resolve) => setTimeout(resolve, 60_000));
     const services = [{
       name: "app",
-      launchMode: fixture === "catalog" ? "vite" : "next-turbopack",
+      launchMode: fixture === "custom-mode" ? "constructor" : fixture === "catalog" ? "vite" : "next-turbopack",
       command: process.execPath,
       args: [path.join(projectRoot, "test", fixture === "launcher" ? "launcher.mjs" : "server.mjs"), String(ports.app), dataDir],
       env: { LOCALDEV_TEST_SECRET: "private-test-value" },

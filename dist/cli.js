@@ -33,19 +33,19 @@ function validateCleanupPaths(paths, id, root) {
         }
     }
 }
-const launchModeDescriptions = {
-    "next-turbopack": "next dev --turbopack",
-    "next-webpack": "next dev --webpack",
-    vite: "vite",
-    "tanstack-start": "tanstack start",
-};
+const launchModeDescriptions = new Map([
+    ["next-turbopack", "next dev --turbopack"],
+    ["next-webpack", "next dev --webpack"],
+    ["vite", "vite"],
+    ["tanstack-start", "tanstack start"],
+]);
 function launchDescription(mode) {
     if (mode === undefined)
         return null;
     if (!/^[a-z][a-z0-9-]{0,63}$/.test(mode)) {
         throw new Error("Service launchMode must be a short, lowercase mode ID without arguments or secrets");
     }
-    return launchModeDescriptions[mode] ?? mode;
+    return launchModeDescriptions.get(mode) ?? mode;
 }
 async function cleanupPaths(receipt) {
     validateCleanupPaths(receipt.cleanupPaths ?? [], receipt.id, receipt.projectRoot);

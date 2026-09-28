@@ -34,19 +34,19 @@ function validateCleanupPaths(paths: string[], id: string, root: string): void {
   }
 }
 
-const launchModeDescriptions: Record<string, string> = {
-  "next-turbopack": "next dev --turbopack",
-  "next-webpack": "next dev --webpack",
-  vite: "vite",
-  "tanstack-start": "tanstack start",
-};
+const launchModeDescriptions = new Map([
+  ["next-turbopack", "next dev --turbopack"],
+  ["next-webpack", "next dev --webpack"],
+  ["vite", "vite"],
+  ["tanstack-start", "tanstack start"],
+]);
 
 function launchDescription(mode: string | undefined): string | null {
   if (mode === undefined) return null;
   if (!/^[a-z][a-z0-9-]{0,63}$/.test(mode)) {
     throw new Error("Service launchMode must be a short, lowercase mode ID without arguments or secrets");
   }
-  return launchModeDescriptions[mode] ?? mode;
+  return launchModeDescriptions.get(mode) ?? mode;
 }
 
 async function cleanupPaths(receipt: SessionReceipt): Promise<void> {
