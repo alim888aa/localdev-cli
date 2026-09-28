@@ -47,7 +47,7 @@ async function canBind(port: number): Promise<boolean> {
 
 async function acquireLock(): Promise<() => Promise<void>> {
   await fs.mkdir(stateRoot, { recursive: true, mode: 0o700 });
-  for (let attempt = 0; attempt < 100; attempt++) {
+  for (let attempt = 0; attempt < 600; attempt++) {
     try {
       await fs.mkdir(lockPath, { mode: 0o700 });
       await fs.writeFile(path.join(lockPath, "owner.json"), JSON.stringify({ pid: process.pid, time: Date.now() }));
@@ -75,12 +75,14 @@ function pidExists(pid: number): boolean {
 export async function reserveSession(
   names: string[],
   makeReceipt: (id: string, dir: string, ports: Record<string, number>) => SessionReceipt,
+  beforeAllocate?: (receipts: SessionReceipt[]) => Promise<void>,
 ): Promise<SessionReceipt> {
   if (names.length === 0 || new Set(names).size !== names.length) {
     throw new Error("Adapter must declare unique port names");
   }
   const release = await acquireLock();
   try {
+    if (beforeAllocate) await beforeAllocate(await listReceipts());
     const used = new Set((await listReceipts())
       .filter((item) => item.state === "starting" || item.state === "ready" || item.state === "stopping")
       .flatMap((item) => Object.values(item.ports)));
