@@ -6,6 +6,7 @@ import { pathToFileURL } from "node:url";
 import { processAlive, processHealth, spawnSeed, spawnService, stopService, waitForSeed, waitForService } from "./process.js";
 import { listReceipts, readReceipt, reserveSession, sessionPath, writeReceipt } from "./state.js";
 import { issueCommand } from "./issue.js";
+import { helpFor } from "./help.js";
 function usage() {
     throw new Error("Usage: localdev startup [fixture] [--project DIR] [--adapter FILE] | status [ID] | stop ID | issue bug|request [--input FILE] [--project DIR] [--session ID] [--cli-ref SHA] [--submit]");
 }
@@ -182,7 +183,13 @@ async function stop(id) {
     console.log(JSON.stringify({ id, stopped: true }));
 }
 async function main() {
-    const [command, ...args] = process.argv.slice(2);
+    const argv = process.argv.slice(2);
+    const help = helpFor(argv);
+    if (help) {
+        console.log(help);
+        return;
+    }
+    const [command, ...args] = argv;
     if (command === "startup")
         await startup(args);
     else if (command === "status")
