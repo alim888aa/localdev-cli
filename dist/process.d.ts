@@ -1,5 +1,6 @@
 import { type ChildProcess } from "node:child_process";
 import type { CommandSpec, OwnedProcess, ServiceSpec } from "./types.js";
+export declare function birthOf(pid: number): string | null;
 export declare function spawnService(spec: ServiceSpec, root: string, dir: string): Promise<{
     owned: OwnedProcess;
     child: ChildProcess;

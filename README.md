@@ -16,10 +16,17 @@ From that project's checkout, run:
 ```sh
 localdev startup                 # the adapter's defaultFixture
 localdev startup messages        # a named project fixture
+localdev startup messages --parallel  # deliberately run a second copy
+localdev startup messages --replace   # stop one matching session and restart
 localdev status
 localdev stop <session-id>
 localdev help                      # all commands and examples
 ```
+
+Repeated startup from the same checkout and fixture shows the healthy existing
+session before using more ports or starting more servers. Terminal users can
+choose to replace it or keep both; unattended agents must pass `--replace` or
+`--parallel` explicitly. Different checkouts and fixtures can run together.
 
 See [the adapter guide](docs/adapter.md) when adding another project. For local
 CLI development, run `pnpm install`, `pnpm build`, and `pnpm test` here.

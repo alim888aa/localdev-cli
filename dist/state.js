@@ -43,7 +43,7 @@ async function canBind(port) {
 }
 async function acquireLock() {
     await fs.mkdir(stateRoot, { recursive: true, mode: 0o700 });
-    for (let attempt = 0; attempt < 100; attempt++) {
+    for (let attempt = 0; attempt < 600; attempt++) {
         try {
             await fs.mkdir(lockPath, { mode: 0o700 });
             await fs.writeFile(path.join(lockPath, "owner.json"), JSON.stringify({ pid: process.pid, time: Date.now() }));
@@ -75,12 +75,14 @@ function pidExists(pid) {
     }
 }
 /** Reserve a complete port set before another CLI invocation can allocate one. */
-export async function reserveSession(names, makeReceipt) {
+export async function reserveSession(names, makeReceipt, beforeAllocate) {
     if (names.length === 0 || new Set(names).size !== names.length) {
         throw new Error("Adapter must declare unique port names");
     }
     const release = await acquireLock();
     try {
+        if (beforeAllocate)
+            await beforeAllocate(await listReceipts());
         const used = new Set((await listReceipts())
             .filter((item) => item.state === "starting" || item.state === "ready" || item.state === "stopping")
             .flatMap((item) => Object.values(item.ports)));

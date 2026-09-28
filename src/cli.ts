@@ -2,22 +2,90 @@
 import { execFileSync } from "node:child_process";
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import { createInterface } from "node:readline/promises";
 import { pathToFileURL } from "node:url";
-import { processAlive, processHealth, spawnSeed, spawnService, stopService, waitForSeed, waitForService } from "./process.js";
+import { birthOf, processAlive, processHealth, spawnSeed, spawnService, stopService, waitForSeed, waitForService } from "./process.js";
 import { listReceipts, readReceipt, reserveSession, sessionPath, writeReceipt } from "./state.js";
 import { issueCommand } from "./issue.js";
 import { helpFor } from "./help.js";
 import type { ProjectAdapter, SessionReceipt } from "./types.js";
 
 function usage(): never {
-  throw new Error("Usage: localdev startup [fixture] [--project DIR] [--adapter FILE] | status [ID] | stop ID | issue bug|request [--input FILE] [--project DIR] [--session ID] [--cli-ref SHA] [--submit]");
+  throw new Error("Usage: localdev startup [fixture] [--project DIR] [--adapter FILE] [--replace [ID] | --parallel] | status [ID] | stop ID | issue bug|request [--input FILE] [--project DIR] [--session ID] [--cli-ref SHA] [--submit]");
 }
 
 function option(args: string[], name: string): string | undefined {
   const index = args.indexOf(name);
   if (index < 0) return undefined;
-  if (!args[index + 1]) usage();
+  if (!args[index + 1] || args[index + 1].startsWith("--")) usage();
   return args[index + 1];
+}
+
+interface StartupChoice {
+  parallel: boolean;
+  replace: boolean;
+  replaceId?: string;
+}
+
+function startupChoice(args: string[]): StartupChoice {
+  const parallel = args.includes("--parallel");
+  const index = args.indexOf("--replace");
+  if (parallel && index >= 0) throw new Error("Choose either --replace or --parallel");
+  const replaceId = index >= 0 && args[index + 1] && !args[index + 1].startsWith("--") ? args[index + 1] : undefined;
+  if (replaceId && !/^[0-9a-f-]{36}$/.test(replaceId)) throw new Error(`Invalid --replace session ID: ${replaceId}`);
+  return { parallel, replace: index >= 0, replaceId };
+}
+
+class DuplicateSessionError extends Error {
+  constructor(readonly matches: SessionReceipt[]) {
+    const summary = matches.map(({ id, state, commit, urls }) =>
+      `${id} (${state}, ${safeSessionOrigin(urls)}, commit ${commit ?? "unknown"})`).join("; ");
+    super(`Existing session for this checkout and fixture: ${summary}. Use --replace [ID] or --parallel.`);
+  }
+}
+
+function safeSessionOrigin(urls: Record<string, string>): string {
+  const raw = urls.app ?? Object.values(urls)[0];
+  if (!raw) return "no URL yet";
+  try {
+    const url = new URL(raw);
+    return url.protocol === "http:" || url.protocol === "https:" ? url.origin : "URL in status";
+  } catch { return "URL in status"; }
+}
+
+async function matchingSessions(receipts: SessionReceipt[], root: string, fixture: string): Promise<SessionReceipt[]> {
+  const candidates = receipts.filter((item) => item.fixture === fixture);
+  const matches = await Promise.all(candidates.map(async (item) => {
+    const itemRoot = await fs.realpath(item.projectRoot).catch(() => path.resolve(item.projectRoot));
+    if (itemRoot !== root) return null;
+    if (item.state === "starting") {
+      return item.ownerBirth && birthOf(item.ownerPid) === item.ownerBirth ? item : null;
+    }
+    if (item.state !== "ready" && item.state !== "stopping" && item.state !== "failed") return null;
+    if (!item.processes.length) return null;
+    for (const record of item.processes) {
+      if (!processAlive(record)) return null;
+      const health = await processHealth(record);
+      if (health.reachable === false || health.listenerOwned === false) return null;
+    }
+    return item;
+  }));
+  return matches.filter((item): item is SessionReceipt => item !== null);
+}
+
+async function askAboutDuplicates(matches: SessionReceipt[]): Promise<StartupChoice> {
+  console.error(new DuplicateSessionError(matches).message);
+  const reader = createInterface({ input: process.stdin, output: process.stderr });
+  try {
+    const answer = (await reader.question("Type parallel, replace <id>, or press Enter to cancel: ")).trim();
+    if (answer === "parallel") return { parallel: true, replace: false };
+    if (answer === "replace" && matches.length === 1) return { parallel: false, replace: true, replaceId: matches[0].id };
+    const selected = /^replace ([0-9a-f-]{36})$/.exec(answer)?.[1];
+    if (selected && matches.some((item) => item.id === selected)) return { parallel: false, replace: true, replaceId: selected };
+    throw new Error("Startup cancelled; existing sessions were left running");
+  } finally {
+    reader.close();
+  }
 }
 
 function gitCommit(root: string): string | null {
@@ -89,7 +157,7 @@ async function publicReceipt(receipt: SessionReceipt): Promise<object> {
 
 async function startup(args: string[]): Promise<void> {
   const requestedFixture = args[0] && !args[0].startsWith("-") ? args[0] : undefined;
-  const projectRoot = path.resolve(option(args, "--project") ?? process.cwd());
+  const projectRoot = await fs.realpath(path.resolve(option(args, "--project") ?? process.cwd()));
   const adapterPath = path.resolve(option(args, "--adapter") ?? path.join(projectRoot, "local.adapter.mjs"));
   const imported = await import(pathToFileURL(adapterPath).href);
   const adapter = imported.default as ProjectAdapter;
@@ -100,12 +168,39 @@ async function startup(args: string[]): Promise<void> {
   if (!fixture || typeof fixture !== "string" || !fixture.trim()) {
     throw new Error(`No fixture named. Set defaultFixture in ${adapterPath} or run localdev startup <fixture>`);
   }
-  const receipt = await reserveSession(adapter.ports, (id, dir, ports) => ({
-    id, fixture, projectRoot, commit: gitCommit(projectRoot), adapterPath,
-    sessionDir: dir, dataDir: path.join(dir, "data"), ports,
-    urls: {}, processes: [], state: "starting", ownerPid: process.pid,
-    createdAt: new Date().toISOString(),
-  }));
+  const ownerBirth = birthOf(process.pid);
+  if (!ownerBirth) throw new Error("Could not verify startup process identity");
+  let choice = startupChoice(args);
+  let receipt: SessionReceipt;
+  for (;;) {
+    try {
+      receipt = await reserveSession(adapter.ports, (id, dir, ports) => ({
+        id, fixture, projectRoot, commit: gitCommit(projectRoot), adapterPath,
+        sessionDir: dir, dataDir: path.join(dir, "data"), ports,
+        urls: {}, processes: [], state: "starting", ownerPid: process.pid, ownerBirth,
+        createdAt: new Date().toISOString(),
+      }), async (receipts) => {
+        const matches = await matchingSessions(receipts, projectRoot, fixture);
+        if (choice.replaceId && !matches.some((item) => item.id === choice.replaceId)) {
+          throw new Error(`Cannot replace ${choice.replaceId}: no healthy matching session for this checkout and fixture`);
+        }
+        if (!matches.length || choice.parallel) return;
+        if (!choice.replace) throw new DuplicateSessionError(matches);
+        const selected = choice.replaceId
+          ? matches.find((item) => item.id === choice.replaceId)
+          : matches.length === 1 ? matches[0] : undefined;
+        if (!selected) throw new DuplicateSessionError(matches);
+        if (selected.state !== "ready") {
+          throw new Error(`Session ${selected.id} is still ${selected.state}; wait for it to settle before replacing it`);
+        }
+        await stopReceipt(selected);
+      });
+      break;
+    } catch (error) {
+      if (!(error instanceof DuplicateSessionError) || !process.stdin.isTTY || choice.parallel || choice.replace) throw error;
+      choice = await askAboutDuplicates(error.matches);
+    }
+  }
   try {
     const context = {
       id: receipt.id, fixture, projectRoot,
@@ -181,6 +276,12 @@ async function stop(id?: string): Promise<void> {
     }
     throw error;
   }
+  await stopReceipt(receipt);
+  console.log(JSON.stringify({ id, stopped: true }));
+}
+
+async function stopReceipt(receipt: SessionReceipt): Promise<void> {
+  const id = receipt.id;
   receipt.state = "stopping";
   await writeReceipt(receipt);
   for (const owned of [...receipt.processes].reverse()) {
@@ -193,7 +294,6 @@ async function stop(id?: string): Promise<void> {
   }
   await cleanupPaths(receipt);
   await fs.rm(sessionPath(id), { recursive: true, force: true });
-  console.log(JSON.stringify({ id, stopped: true }));
 }
 
 async function main(): Promise<void> {

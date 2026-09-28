@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile, execFileSync, spawn } from "node:child_process";
-import { mkdir, mkdtemp, readFile, readdir, rm, symlink } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -60,6 +60,136 @@ test("concurrent sessions have separate ports/data and stop independently", asyn
   } finally {
     if (first) await run("stop", first.id).catch(() => undefined);
     if (second) await run("stop", second.id).catch(() => undefined);
+    await rm(state, { recursive: true, force: true });
+  }
+});
+
+test("duplicate startup requires a choice and replace stops only the selected session", async () => {
+  const state = await mkdtemp(path.join(os.tmpdir(), "local-cli-duplicate-"));
+  const env = { ...process.env, LOCAL_CLI_STATE_DIR: state };
+  const run = async (...args) => {
+    const { stdout } = await exec(process.execPath, [cli, ...args], { env, cwd: root });
+    return JSON.parse(stdout);
+  };
+  let first;
+  let parallel;
+  let replacement;
+  let bareReplacement;
+  try {
+    first = await run("startup", "base", "--project", root, "--adapter", adapter);
+    await assert.rejects(run("startup", "base", "--project", root, "--adapter", adapter), /Existing session/);
+    const alias = path.join(state, "same-checkout-alias");
+    await symlink(root, alias, "dir");
+    await assert.rejects(run("startup", "base", "--project", alias, "--adapter", adapter), /Existing session/);
+    assert.equal((await run("status")).length, 1);
+    assert.equal((await fetch(first.urls.app)).status, 200);
+    parallel = await run("startup", "base", "--parallel", "--project", root, "--adapter", adapter);
+    assert.equal((await run("status")).length, 2);
+    replacement = await run("startup", "base", "--replace", parallel.id, "--project", root, "--adapter", adapter);
+    assert.notEqual(replacement.id, parallel.id);
+    assert.equal((await run("status")).length, 2);
+    await assert.rejects(fetch(parallel.urls.app));
+    assert.equal((await fetch(first.urls.app)).status, 200);
+    assert.equal((await fetch(replacement.urls.app)).status, 200);
+    await run("stop", first.id);
+    bareReplacement = await run("startup", "base", "--replace", "--project", root, "--adapter", adapter);
+    await assert.rejects(fetch(replacement.urls.app));
+    assert.equal((await fetch(bareReplacement.urls.app)).status, 200);
+  } finally {
+    for (const item of [first, parallel, replacement, bareReplacement]) {
+      if (item) await run("stop", item.id).catch(() => undefined);
+    }
+    await rm(state, { recursive: true, force: true });
+  }
+});
+
+test("concurrent duplicate startup allocates only one session", async () => {
+  const state = await mkdtemp(path.join(os.tmpdir(), "local-cli-duplicate-race-"));
+  const env = { ...process.env, LOCAL_CLI_STATE_DIR: state };
+  const run = async (...args) => {
+    const { stdout } = await exec(process.execPath, [cli, ...args], { env, cwd: root });
+    return JSON.parse(stdout);
+  };
+  let receipt;
+  try {
+    const results = await Promise.allSettled([
+      run("startup", "base", "--project", root, "--adapter", adapter),
+      run("startup", "base", "--project", root, "--adapter", adapter),
+    ]);
+    const completed = results.filter((item) => item.status === "fulfilled");
+    assert.equal(completed.length, 1);
+    assert.match(String(results.find((item) => item.status === "rejected")?.reason), /Existing session/);
+    [receipt] = await run("status");
+    assert.equal(receipt.id, completed[0].value.id);
+  } finally {
+    if (receipt) await run("stop", receipt.id).catch(() => undefined);
+    await rm(state, { recursive: true, force: true });
+  }
+});
+
+test("explicit replacement rejects an unmatched session ID before allocation", async () => {
+  const state = await mkdtemp(path.join(os.tmpdir(), "local-cli-unmatched-replace-"));
+  const env = { ...process.env, LOCAL_CLI_STATE_DIR: state };
+  const run = async (...args) => {
+    const { stdout } = await exec(process.execPath, [cli, ...args], { env, cwd: root });
+    return JSON.parse(stdout);
+  };
+  try {
+    await assert.rejects(run("startup", "base", "--replace", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "--project", root, "--adapter", adapter), /no healthy matching session/);
+    assert.deepEqual(await run("status"), []);
+  } finally {
+    await rm(state, { recursive: true, force: true });
+  }
+});
+
+test("starting receipt with a reused PID does not block startup", async () => {
+  const state = await mkdtemp(path.join(os.tmpdir(), "local-cli-reused-pid-"));
+  const env = { ...process.env, LOCAL_CLI_STATE_DIR: state };
+  const run = async (...args) => {
+    const { stdout } = await exec(process.execPath, [cli, ...args], { env, cwd: root });
+    return JSON.parse(stdout);
+  };
+  const staleId = "11111111-2222-3333-4444-555555555555";
+  let fresh;
+  try {
+    const staleDir = path.join(state, "sessions", staleId);
+    await mkdir(staleDir, { recursive: true });
+    await writeFile(path.join(staleDir, "receipt.json"), JSON.stringify({
+      id: staleId, fixture: "base", projectRoot: root, commit: null,
+      adapterPath: adapter, sessionDir: staleDir, dataDir: path.join(staleDir, "data"),
+      ports: {}, urls: {}, processes: [], state: "starting",
+      ownerPid: process.pid, ownerBirth: "an earlier process with this PID",
+      createdAt: new Date().toISOString(),
+    }));
+    fresh = await run("startup", "base", "--project", root, "--adapter", adapter);
+    assert.equal(fresh.state, "ready");
+    assert.notEqual(fresh.id, staleId);
+  } finally {
+    if (fresh) await run("stop", fresh.id).catch(() => undefined);
+    await rm(state, { recursive: true, force: true });
+  }
+});
+
+test("a dead same-fixture receipt does not block a new startup", async () => {
+  const state = await mkdtemp(path.join(os.tmpdir(), "local-cli-dead-duplicate-"));
+  const env = { ...process.env, LOCAL_CLI_STATE_DIR: state };
+  const run = async (...args) => {
+    const { stdout } = await exec(process.execPath, [cli, ...args], { env, cwd: root });
+    return JSON.parse(stdout);
+  };
+  let dead;
+  let fresh;
+  try {
+    dead = await run("startup", "base", "--project", root, "--adapter", adapter);
+    process.kill(-dead.processes[0].pid, "SIGKILL");
+    await waitUntil(async () => (await run("status", dead.id))[0].state === "degraded");
+    fresh = await run("startup", "base", "--project", root, "--adapter", adapter);
+    assert.equal(fresh.state, "ready");
+    assert.equal((await fetch(fresh.urls.app)).status, 200);
+  } finally {
+    for (const item of [dead, fresh]) {
+      if (item) await run("stop", item.id).catch(() => undefined);
+    }
     await rm(state, { recursive: true, force: true });
   }
 });
