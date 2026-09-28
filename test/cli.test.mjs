@@ -40,6 +40,12 @@ test("concurrent sessions have separate ports/data and stop independently", asyn
     assert.notEqual(first.id, second.id);
     assert.equal(first.state, "ready");
     assert.equal(second.state, "ready");
+    assert.equal(first.processes[0].launch, "next dev --turbopack");
+    assert.equal(second.processes[0].launch, "vite");
+    assert.equal((await run("status", first.id))[0].processes[0].launchMode, "next-turbopack");
+    assert.equal((await run("status", second.id))[0].processes[0].launchMode, "vite");
+    assert.ok(!JSON.stringify(first).includes("private-test-value"));
+    assert.ok(!JSON.stringify(second).includes("private-test-value"));
     assert.equal(new Set([...Object.values(first.ports), ...Object.values(second.ports)]).size, 4);
     assert.notEqual(first.dataDir, second.dataDir);
     assert.equal(await readFile(path.join(first.dataDir, "seed.txt"), "utf8"), "ready\n");
@@ -88,6 +94,25 @@ test("separate projects share one allocator and stop independently", async () =>
     if (first) await run("stop", first.id).catch(() => undefined);
     if (second) await run("stop", second.id).catch(() => undefined);
     await rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test("custom launch mode cannot resolve an inherited object property", async () => {
+  const state = await mkdtemp(path.join(os.tmpdir(), "local-cli-custom-mode-"));
+  const env = { ...process.env, LOCAL_CLI_STATE_DIR: state };
+  const run = async (...args) => {
+    const { stdout } = await exec(process.execPath, [cli, ...args], { env, cwd: root });
+    return JSON.parse(stdout);
+  };
+  let receipt;
+  try {
+    receipt = await run("startup", "custom-mode", "--project", root, "--adapter", adapter);
+    assert.equal(receipt.processes[0].launch, "constructor");
+    const [later] = await run("status", receipt.id);
+    assert.equal(later.processes[0].launch, "constructor");
+  } finally {
+    if (receipt) await run("stop", receipt.id).catch(() => undefined);
+    await rm(state, { recursive: true, force: true });
   }
 });
 

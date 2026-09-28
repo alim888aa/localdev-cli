@@ -24,6 +24,8 @@ export interface CommandSpec {
 }
 export interface ServiceSpec extends CommandSpec {
     name: string;
+    /** Safe mode ID for status, such as next-turbopack or vite. Never put secrets here. */
+    launchMode?: string;
     readyPort?: string;
     readyPorts?: string[];
     readyHost?: string;
@@ -37,6 +39,7 @@ export interface SessionPlan {
 }
 export interface OwnedProcess {
     name: string;
+    launchMode?: string;
     pid: number;
     birth: string;
     guardPid: number;
