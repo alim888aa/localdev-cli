@@ -6,6 +6,7 @@ import { pathToFileURL } from "node:url";
 import { processAlive, processHealth, spawnSeed, spawnService, stopService, waitForSeed, waitForService } from "./process.js";
 import { listReceipts, readReceipt, reserveSession, sessionPath, writeReceipt } from "./state.js";
 import { issueCommand } from "./issue.js";
+import { helpFor } from "./help.js";
 import type { ProjectAdapter, SessionReceipt } from "./types.js";
 
 function usage(): never {
@@ -177,7 +178,13 @@ async function stop(id?: string): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  const [command, ...args] = process.argv.slice(2);
+  const argv = process.argv.slice(2);
+  const help = helpFor(argv);
+  if (help) {
+    console.log(help);
+    return;
+  }
+  const [command, ...args] = argv;
   if (command === "startup") await startup(args);
   else if (command === "status") await status(args[0]);
   else if (command === "stop") await stop(args[0]);

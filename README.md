@@ -18,6 +18,7 @@ localdev startup                 # the adapter's defaultFixture
 localdev startup messages        # a named project fixture
 localdev status
 localdev stop <session-id>
+localdev help                      # all commands and examples
 ```
 
 See [the adapter guide](docs/adapter.md) when adding another project. For local
