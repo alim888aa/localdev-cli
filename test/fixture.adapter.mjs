@@ -23,7 +23,9 @@ export default {
       name: "app",
       launchMode: fixture === "custom-mode" ? "constructor" : fixture === "catalog" ? "vite" : "next-turbopack",
       command: process.execPath,
-      args: [path.join(projectRoot, "test", fixture === "launcher" ? "launcher.mjs" : "server.mjs"), String(ports.app), dataDir],
+      args: fixture === "neverready"
+        ? [path.join(projectRoot, "test", "slow-seed.mjs"), dataDir]
+        : [path.join(projectRoot, "test", fixture === "launcher" ? "launcher.mjs" : "server.mjs"), String(ports.app), dataDir],
       env: { LOCALDEV_TEST_SECRET: "private-test-value" },
       readyPort: "app",
       readyTimeoutMs: 5000,
@@ -33,7 +35,7 @@ export default {
       command: process.execPath,
       args: [path.join(projectRoot, "test", "missing.mjs")],
       readyPort: "secondary",
-      readyTimeoutMs: 2000,
+      readyTimeoutMs: 5000,
     });
     return {
       services,

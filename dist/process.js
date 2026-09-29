@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import net from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { linuxListenerOwned } from "./linux-listener.js";
 const supervisorPath = fileURLToPath(new URL("./supervisor.js", import.meta.url));
 export function birthOf(pid) {
     try {
@@ -58,6 +59,8 @@ function descendsFromGroup(pid, pgid) {
 function ownedListener(record) {
     if (!record.readyPort)
         return false;
+    if (process.platform === "linux" && linuxListenerOwned(record.readyPort, record.pid))
+        return true;
     try {
         const output = execFileSync("lsof", [
             "-nP", `-iTCP:${record.readyPort}`, "-sTCP:LISTEN", "-Fp",
@@ -146,13 +149,26 @@ export function spawnService(spec, root, dir) {
 export function spawnSeed(spec, root, dir) {
     return spawnManaged("seed", spec, root, dir);
 }
-export async function waitForService(child, spec, port, record) {
+export async function waitForService(child, spec, port, record, ensureActive) {
     const deadline = Date.now() + (spec.readyTimeoutMs ?? 60_000);
     while (Date.now() < deadline) {
+        await ensureActive();
         if (child.exitCode !== null || child.signalCode !== null) {
             throw new Error(`${spec.name} supervisor exited before port ${port} was ready`);
         }
+        try {
+            const exit = JSON.parse(await fs.readFile(record.exitFile, "utf8"));
+            // A successful launcher may leave its server child listening in this group.
+            if (exit.code !== 0 || exit.signal) {
+                throw new Error(`${spec.name} command exited (${exit.signal ?? `code ${exit.code}`}) before port ${port} was ready; log: ${record.log}`);
+            }
+        }
+        catch (error) {
+            if (error.code !== "ENOENT")
+                throw error;
+        }
         if (await portOpen(spec.readyHost ?? "127.0.0.1", port) && ownedListener({ ...record, readyPort: port })) {
+            await ensureActive();
             child.unref();
             return;
         }
@@ -160,11 +176,12 @@ export async function waitForService(child, spec, port, record) {
     }
     throw new Error(`${spec.name} did not listen on port ${port} in time`);
 }
-export async function waitForSeed(child, exitFile, timeoutMs = 300_000) {
+export async function waitForSeed(child, exitFile, timeoutMs = 300_000, ensureActive) {
     if (!Number.isFinite(timeoutMs) || timeoutMs <= 0)
         throw new Error("Seed timeout must be positive");
     const deadline = Date.now() + timeoutMs;
     while (child.exitCode === null && child.signalCode === null) {
+        await ensureActive?.();
         try {
             const result = JSON.parse(await fs.readFile(exitFile, "utf8"));
             if (result.code !== 0) {

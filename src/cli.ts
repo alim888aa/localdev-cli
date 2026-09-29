@@ -122,6 +122,22 @@ async function cleanupPaths(receipt: SessionReceipt): Promise<void> {
   for (const item of receipt.cleanupPaths ?? []) await fs.rm(item, { recursive: true, force: true });
 }
 
+class StartupStoppedError extends Error {
+  constructor(id: string) { super(`Session ${id} was stopped during startup`); }
+}
+
+/** A separate stop command may cancel startup while a service or seed is waiting. */
+async function ensureState(id: string, state: SessionReceipt["state"]): Promise<void> {
+  try {
+    if ((await readReceipt(id)).state !== state) throw new StartupStoppedError(id);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") throw new StartupStoppedError(id);
+    throw error;
+  }
+}
+
+function ensureStarting(id: string): Promise<void> { return ensureState(id, "starting"); }
+
 async function publicReceipt(receipt: SessionReceipt): Promise<object> {
   const processes = await Promise.all(receipt.processes.map(async (record) => {
     const groupOwned = processAlive(record);
@@ -222,6 +238,7 @@ async function startup(args: string[]): Promise<void> {
     receipt.credentialsFile = plan.credentialsFile;
     await writeReceipt(receipt);
     for (const service of plan.services) {
+      await ensureStarting(receipt.id);
       const names = service.readyPorts ?? (service.readyPort ? [service.readyPort] : []);
       if (!names.length) throw new Error(`Service ${service.name} has no readiness ports`);
       const checks = names.map((name) => {
@@ -236,26 +253,41 @@ async function startup(args: string[]): Promise<void> {
       owned.readyChecks = checks;
       receipt.processes.push(owned);
       await writeReceipt(receipt);
-      for (const check of checks) await waitForService(child, service, check.port, owned);
+      for (const check of checks) await waitForService(child, service, check.port, owned, () => ensureStarting(receipt.id));
     }
     if (plan.seed) {
+      await ensureStarting(receipt.id);
       const { owned, child, exitFile } = await spawnSeed(plan.seed, projectRoot, receipt.sessionDir);
       receipt.processes.push(owned);
       await writeReceipt(receipt);
-      await waitForSeed(child, exitFile, plan.seed.timeoutMs);
+      await waitForSeed(child, exitFile, plan.seed.timeoutMs, () => ensureStarting(receipt.id));
       if (!(await stopService(owned))) throw new Error("Could not verify ownership of the seed group during cleanup");
       receipt.processes = receipt.processes.filter((item) => item.pid !== owned.pid);
       await writeReceipt(receipt);
     }
+    await ensureStarting(receipt.id);
     receipt.state = "ready";
     await writeReceipt(receipt);
+    await ensureState(receipt.id, "ready");
     console.log(JSON.stringify(await publicReceipt(receipt), null, 2));
   } catch (error) {
     receipt.error = error instanceof Error ? error.message : String(error);
     for (const owned of [...receipt.processes].reverse()) await stopService(owned);
     await cleanupPaths(receipt);
+    if (error instanceof StartupStoppedError) throw error;
+    try {
+      const latest = await readReceipt(receipt.id);
+      if (latest.state === "stopping") throw new StartupStoppedError(receipt.id);
+    } catch (readError) {
+      if ((readError as NodeJS.ErrnoException).code === "ENOENT") throw new StartupStoppedError(receipt.id);
+      throw readError;
+    }
     receipt.state = "failed";
-    await writeReceipt(receipt);
+    try { await writeReceipt(receipt); }
+    catch (writeError) {
+      if ((writeError as NodeJS.ErrnoException).code === "ENOENT") throw new StartupStoppedError(receipt.id);
+      throw writeError;
+    }
     throw new Error(`Session ${receipt.id} failed: ${receipt.error}. Logs: ${receipt.sessionDir}`);
   }
 }
