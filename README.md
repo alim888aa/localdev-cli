@@ -106,10 +106,10 @@ processes and directory. Each service and seed runs under a persistent process
 group supervisor, so `stop` can still kill a server left behind by an exited
 launcher. A guard in the same group keeps ownership verifiable if the supervisor
 itself crashes. `status` probes each service port and reports `degraded` if one
-goes down or another process takes its port. Listener ownership uses `lsof` and
-the process group, so `lsof` must be available on the host. An in-flight seed is
-recorded in the receipt before the CLI waits for
-it. Seeds time out after five minutes by default; set `seed.timeoutMs` in an
+goes down or another process takes its port. Listener ownership checks the
+process group through Linux `/proc` or `lsof`; macOS requires `lsof`. An in-flight
+seed is recorded in the receipt before the CLI waits for it. Seeds time out
+after five minutes by default; set `seed.timeoutMs` in an
 adapter if a fixture needs a different limit. A failed startup stops launched
 processes and keeps its receipt/logs until
 `stop <id>` so the failure can be inspected.

@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import net from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { linuxListenerOwned } from "./linux-listener.js";
 import type { CommandSpec, OwnedProcess, ServiceSpec } from "./types.js";
 
 const supervisorPath = fileURLToPath(new URL("./supervisor.js", import.meta.url));
@@ -48,6 +49,7 @@ function descendsFromGroup(pid: number, pgid: number): boolean {
 /** Check the listener PID, so another app cannot make an owned session look healthy. */
 function ownedListener(record: OwnedProcess): boolean {
   if (!record.readyPort) return false;
+  if (process.platform === "linux" && linuxListenerOwned(record.readyPort, record.pid)) return true;
   try {
     const output = execFileSync("lsof", [
       "-nP", `-iTCP:${record.readyPort}`, "-sTCP:LISTEN", "-Fp",

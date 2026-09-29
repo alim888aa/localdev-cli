@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import net from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { linuxListenerOwned } from "./linux-listener.js";
 const supervisorPath = fileURLToPath(new URL("./supervisor.js", import.meta.url));
 export function birthOf(pid) {
     try {
@@ -58,6 +59,8 @@ function descendsFromGroup(pid, pgid) {
 function ownedListener(record) {
     if (!record.readyPort)
         return false;
+    if (process.platform === "linux" && linuxListenerOwned(record.readyPort, record.pid))
+        return true;
     try {
         const output = execFileSync("lsof", [
             "-nP", `-iTCP:${record.readyPort}`, "-sTCP:LISTEN", "-Fp",
