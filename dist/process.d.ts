@@ -11,8 +11,8 @@ export declare function spawnSeed(spec: CommandSpec, root: string, dir: string):
     child: ChildProcess;
     exitFile: string;
 }>;
-export declare function waitForService(child: ChildProcess, spec: ServiceSpec, port: number, record: OwnedProcess): Promise<void>;
-export declare function waitForSeed(child: ChildProcess, exitFile: string, timeoutMs?: number): Promise<void>;
+export declare function waitForService(child: ChildProcess, spec: ServiceSpec, port: number, record: OwnedProcess, ensureActive: () => Promise<void>): Promise<void>;
+export declare function waitForSeed(child: ChildProcess, exitFile: string, timeoutMs?: number, ensureActive?: () => Promise<void>): Promise<void>;
 /** Stop the owned process group, including children left by an exited launcher. */
 export declare function stopService(record: OwnedProcess): Promise<boolean>;
 export declare function processAlive(record: OwnedProcess): boolean;

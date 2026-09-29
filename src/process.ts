@@ -139,13 +139,25 @@ export async function waitForService(
   spec: ServiceSpec,
   port: number,
   record: OwnedProcess,
+  ensureActive: () => Promise<void>,
 ): Promise<void> {
   const deadline = Date.now() + (spec.readyTimeoutMs ?? 60_000);
   while (Date.now() < deadline) {
+    await ensureActive();
     if (child.exitCode !== null || child.signalCode !== null) {
       throw new Error(`${spec.name} supervisor exited before port ${port} was ready`);
     }
+    try {
+      const exit = JSON.parse(await fs.readFile(record.exitFile, "utf8")) as { code: number | null; signal: string | null };
+      // A successful launcher may leave its server child listening in this group.
+      if (exit.code !== 0 || exit.signal) {
+        throw new Error(`${spec.name} command exited (${exit.signal ?? `code ${exit.code}`}) before port ${port} was ready; log: ${record.log}`);
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
     if (await portOpen(spec.readyHost ?? "127.0.0.1", port) && ownedListener({ ...record, readyPort: port })) {
+      await ensureActive();
       child.unref();
       return;
     }
@@ -154,10 +166,11 @@ export async function waitForService(
   throw new Error(`${spec.name} did not listen on port ${port} in time`);
 }
 
-export async function waitForSeed(child: ChildProcess, exitFile: string, timeoutMs = 300_000): Promise<void> {
+export async function waitForSeed(child: ChildProcess, exitFile: string, timeoutMs = 300_000, ensureActive?: () => Promise<void>): Promise<void> {
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new Error("Seed timeout must be positive");
   const deadline = Date.now() + timeoutMs;
   while (child.exitCode === null && child.signalCode === null) {
+    await ensureActive?.();
     try {
       const result = JSON.parse(await fs.readFile(exitFile, "utf8")) as { code: number | null; signal: string | null };
       if (result.code !== 0) {

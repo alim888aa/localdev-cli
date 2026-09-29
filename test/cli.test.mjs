@@ -306,13 +306,39 @@ test("a partial startup stops its first service and leaves a failed receipt", as
     return JSON.parse(stdout);
   };
   try {
-    await assert.rejects(run("startup", "broken", "--project", root, "--adapter", adapter));
+    const started = Date.now();
+    await assert.rejects(run("startup", "broken", "--project", root, "--adapter", adapter), /broken command exited \(code 1\).*log:/);
+    assert.ok(Date.now() - started < 4000, "a failed command should not wait for the five-second readiness timeout");
     const [receipt] = await run("status");
     assert.equal(receipt.state, "failed");
     assert.equal(receipt.processes[0].alive, false);
     await run("stop", receipt.id);
     assert.deepEqual(await readdir(path.join(state, "sessions")), []);
   } finally {
+    await rm(state, { recursive: true, force: true });
+  }
+});
+
+test("stopping a waiting startup reports cancellation and leaves no receipt", async () => {
+  const state = await mkdtemp(path.join(os.tmpdir(), "local-cli-stop-starting-"));
+  const env = { ...process.env, LOCAL_CLI_STATE_DIR: state };
+  const run = async (...args) => {
+    const { stdout } = await exec(process.execPath, [cli, ...args], { env, cwd: root });
+    return JSON.parse(stdout);
+  };
+  const starting = exec(process.execPath, [cli, "startup", "neverready", "--project", root, "--adapter", adapter], { env, cwd: root });
+  starting.catch(() => undefined);
+  let id;
+  try {
+    id = await waitUntil(async () => {
+      const sessions = await run("status");
+      return sessions.find((item) => item.fixture === "neverready" && item.processes.length)?.id;
+    });
+    await run("stop", id);
+    await assert.rejects(starting, /was stopped during startup/);
+    assert.deepEqual(await run("status"), []);
+  } finally {
+    if (id) await run("stop", id).catch(() => undefined);
     await rm(state, { recursive: true, force: true });
   }
 });
