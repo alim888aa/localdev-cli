@@ -28,6 +28,11 @@ session before using more ports or starting more servers. Terminal users can
 choose to replace it or keep both; unattended agents must pass `--replace` or
 `--parallel` explicitly. Different checkouts and fixtures can run together.
 
+Ports named `web` or `app` prefer the first available port in 3000–3010 across
+all projects and worktrees. The allocator skips live listeners and ports already
+reserved by other sessions. If the range is full, it falls back to a free port
+in 20000–59999. Emulator and other named ports keep their independent allocation.
+
 See [the adapter guide](docs/adapter.md) when adding another project. For local
 CLI development, run `pnpm install`, `pnpm build`, and `pnpm test` here.
 

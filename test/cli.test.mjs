@@ -88,12 +88,14 @@ test("duplicate startup requires a choice and replace stops only the selected se
     replacement = await run("startup", "base", "--replace", parallel.id, "--project", root, "--adapter", adapter);
     assert.notEqual(replacement.id, parallel.id);
     assert.equal((await run("status")).length, 2);
-    await assert.rejects(fetch(parallel.urls.app));
+    assert.ok(!(await run("status")).some(item => item.id === parallel.id));
+    assert.throws(() => process.kill(parallel.processes[0].pid, 0), { code: "ESRCH" });
     assert.equal((await fetch(first.urls.app)).status, 200);
     assert.equal((await fetch(replacement.urls.app)).status, 200);
     await run("stop", first.id);
     bareReplacement = await run("startup", "base", "--replace", "--project", root, "--adapter", adapter);
-    await assert.rejects(fetch(replacement.urls.app));
+    assert.ok(!(await run("status")).some(item => item.id === replacement.id));
+    assert.throws(() => process.kill(replacement.processes[0].pid, 0), { code: "ESRCH" });
     assert.equal((await fetch(bareReplacement.urls.app)).status, 200);
   } finally {
     for (const item of [first, parallel, replacement, bareReplacement]) {

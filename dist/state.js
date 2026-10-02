@@ -89,7 +89,18 @@ export async function reserveSession(names, makeReceipt, beforeAllocate) {
         const ports = {};
         for (const name of names) {
             let found = false;
-            for (let attempt = 0; attempt < 1000; attempt++) {
+            // App URLs stay predictable across worktrees; emulator ports remain isolated.
+            if (name === "web" || name === "app") {
+                for (let candidate = 3000; candidate <= 3010; candidate++) {
+                    if (used.has(candidate) || !(await canBind(candidate)))
+                        continue;
+                    ports[name] = candidate;
+                    used.add(candidate);
+                    found = true;
+                    break;
+                }
+            }
+            for (let attempt = 0; !found && attempt < 1000; attempt++) {
                 const candidate = randomInt(20_000, 60_000);
                 if (used.has(candidate) || !(await canBind(candidate)))
                     continue;
