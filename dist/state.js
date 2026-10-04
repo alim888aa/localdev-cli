@@ -36,8 +36,7 @@ export async function writeReceipt(receipt) {
 }
 async function canBind(port) {
     return new Promise((resolve) => {
-        // Nothing talks to the lock port; drop any stray connection so close() never waits on one.
-        const server = net.createServer((socket) => socket.destroy());
+        const server = net.createServer();
         server.once("error", () => resolve(false));
         server.listen(port, "127.0.0.1", () => server.close(() => resolve(true)));
     });
@@ -50,7 +49,8 @@ export const lockPort = Number(process.env.LOCAL_CLI_LOCK_PORT) ||
     10_000 + (createHash("sha256").update(stateRoot).digest().readUInt32BE(0) % 10_000);
 function listenOnce(port) {
     return new Promise((resolve, reject) => {
-        const server = net.createServer();
+        // Nothing talks to the lock port; drop any stray connection so close() never waits on one.
+        const server = net.createServer((socket) => socket.destroy());
         server.once("error", (error) => error.code === "EADDRINUSE" ? resolve(null) : reject(error));
         server.listen({ host: "127.0.0.1", port, exclusive: true }, () => { server.unref(); resolve(server); });
     });
@@ -75,7 +75,9 @@ async function takeLegacyLock(token, deadline) {
         }
         const owner = await fs.readFile(ownerFile, "utf8").then((text) => JSON.parse(text), () => null);
         const modified = await fs.stat(lockPath).then((stat) => stat.mtimeMs, () => Date.now());
-        const abandoned = owner ? Date.now() - owner.time > 30_000 && !pidExists(owner.pid) : Date.now() - modified > 30_000;
+        // An owner whose process is gone is crash debris and goes at once; a live owner is always waited for,
+        // whatever wrote it. Without an owner file, only age can tell (the accepted >30 s legacy limit).
+        const abandoned = owner ? !pidExists(owner.pid) : Date.now() - modified > 30_000;
         if (abandoned)
             await fs.rm(lockPath, { recursive: true, force: true });
         else
