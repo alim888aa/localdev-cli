@@ -124,6 +124,16 @@ function pidExists(pid: number): boolean {
   try { process.kill(pid, 0); return true; } catch { return false; }
 }
 
+/**
+ * Run fn under the allocation lock. Receipt read-modify-writes that must not interleave (fault, the start of stop)
+ * use it, so two commands cannot each write back a receipt missing the other's change. Not reentrant: code already
+ * inside reserveSession's beforeAllocate holds the lock and must not call this.
+ */
+export async function withStateLock<T>(fn: () => Promise<T>): Promise<T> {
+  const release = await acquireLock();
+  try { return await fn(); } finally { await release(); }
+}
+
 /** Reserve a complete port set before another CLI invocation can allocate one. */
 export async function reserveSession(
   names: string[],

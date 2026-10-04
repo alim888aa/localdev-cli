@@ -5,7 +5,7 @@ import path from "node:path";
 import { createInterface } from "node:readline/promises";
 import { pathToFileURL } from "node:url";
 import { birthOf, processAlive, processHealth, spawnSeed, spawnService, stopService, waitForSeed, waitForService } from "./process.js";
-import { listReceipts, readReceipt, reserveSession, sessionPath, writeReceipt } from "./state.js";
+import { listReceipts, readReceipt, reserveSession, sessionPath, withStateLock, writeReceipt } from "./state.js";
 import { issueCommand } from "./issue.js";
 import { clearFaults, isFaultMode, pauseService, resumeAllFaults } from "./fault.js";
 import { helpFor } from "./help.js";
@@ -211,7 +211,9 @@ async function startup(args: string[]): Promise<void> {
         if (selected.state !== "ready") {
           throw new Error(`Session ${selected.id} is still ${selected.state}; wait for it to settle before replacing it`);
         }
-        await stopReceipt(selected);
+        // beforeAllocate already holds the allocation lock.
+        const stopping = await markStopping(selected.id);
+        if (stopping) await stopReceipt(stopping);
       });
       break;
     } catch (error) {
@@ -312,14 +314,10 @@ async function status(id?: string): Promise<void> {
 
 async function stop(id?: string): Promise<void> {
   if (!id) usage();
-  let receipt: SessionReceipt;
-  try { receipt = await readReceipt(id); }
-  catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-      console.log(JSON.stringify({ id, stopped: true, alreadyGone: true }));
-      return;
-    }
-    throw error;
+  const receipt = await withStateLock(() => markStopping(id));
+  if (!receipt) {
+    console.log(JSON.stringify({ id, stopped: true, alreadyGone: true }));
+    return;
   }
   await stopReceipt(receipt);
   console.log(JSON.stringify({ id, stopped: true }));
@@ -334,23 +332,41 @@ async function fault(args: string[]): Promise<void> {
   if (Boolean(mode) === clear) throw new Error("Choose either --mode pause or --clear");
   if (mode && !portName) throw new Error("Name the port to fault, e.g. localdev fault <id> dataconnect --mode pause");
   if (mode && !isFaultMode(mode)) throw new Error(`Unsupported fault mode ${mode}; supported: pause`);
-  let receipt: SessionReceipt;
-  try { receipt = await readReceipt(id); }
-  catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") throw new Error(`No session ${id}; it is unknown or already stopped`);
-    throw error;
-  }
-  const result = clear
-    ? { id, cleared: await clearFaults(receipt, portName) }
-    : { id, fault: await pauseService(receipt, portName!) };
+  // Read, signal and write under the lock, so a concurrent fault or stop cannot drop this fault's record.
+  const result = await withStateLock(async () => {
+    let receipt: SessionReceipt;
+    try { receipt = await readReceipt(id); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") throw new Error(`No session ${id}; it is unknown or already stopped`);
+      throw error;
+    }
+    return clear
+      ? { id, cleared: await clearFaults(receipt, portName) }
+      : { id, fault: await pauseService(receipt, portName!) };
+  });
   console.log(JSON.stringify(result, null, 2));
 }
 
-async function stopReceipt(receipt: SessionReceipt): Promise<void> {
-  const id = receipt.id;
+/**
+ * The first step of stop, called with the allocation lock held: re-read the receipt so faults recorded since any
+ * earlier read are resumed too, then mark it stopping so no new fault can start. Null when the session is gone.
+ */
+async function markStopping(id: string): Promise<SessionReceipt | null> {
+  let receipt: SessionReceipt;
+  try { receipt = await readReceipt(id); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
   receipt.state = "stopping";
   resumeAllFaults(receipt);
   await writeReceipt(receipt);
+  return receipt;
+}
+
+/** Stop a receipt markStopping returned; runs outside the lock because service shutdown can take seconds. */
+async function stopReceipt(receipt: SessionReceipt): Promise<void> {
+  const id = receipt.id;
   for (const owned of [...receipt.processes].reverse()) {
     if (!(await stopService(owned))) {
       receipt.error = `Could not verify ownership of ${owned.name} process group`;

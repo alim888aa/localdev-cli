@@ -9,8 +9,11 @@ export declare function listenerPids(port: number): number[];
  * A listener from another session or an unrelated app is never returned, so it can never be signalled.
  */
 export declare function ownedListenerProcesses(record: OwnedProcess, port: number): ProcessIdentity[];
-/** Signal one recorded process only while it is still the same process (start time), never a reused PID. */
-export declare function signalProcess(member: ProcessIdentity, signal: NodeJS.Signals): boolean;
+/**
+ * Signal one recorded process only while it is still the same process (start time), never a reused PID.
+ * "gone" means confirmed exited or reused; "failed" means it may still be the recorded process but was not signalled.
+ */
+export declare function signalProcess(member: ProcessIdentity, signal: NodeJS.Signals): "signalled" | "gone" | "failed";
 export declare function spawnService(spec: ServiceSpec, root: string, dir: string): Promise<{
     owned: OwnedProcess;
     child: ChildProcess;

@@ -156,16 +156,32 @@ export function ownedListenerProcesses(record: OwnedProcess, port: number): Proc
     .map((group) => group.pgid);
   if (processAlive(record)) groups.unshift(record.pid);
   if (!groups.length) return [];
-  return listenerPids(port)
-    .filter((pid) => groups.some((pgid) => descendsFromGroup(pid, pgid)))
-    .map((pid) => ({ pid, birth: birthOf(pid) }))
-    .filter((member): member is ProcessIdentity => member.birth !== null);
+  const owned: ProcessIdentity[] = [];
+  for (const pid of listenerPids(port)) {
+    // Birth first, then ancestry, then the same birth again: a PID that exits and is reused while ancestry is
+    // checked would otherwise be recorded with the newcomer's birth and later pass signalProcess.
+    const birth = birthOf(pid);
+    if (birth === null || !groups.some((pgid) => descendsFromGroup(pid, pgid))) continue;
+    if (birthOf(pid) === birth) owned.push({ pid, birth });
+  }
+  return owned;
 }
 
-/** Signal one recorded process only while it is still the same process (start time), never a reused PID. */
-export function signalProcess(member: ProcessIdentity, signal: NodeJS.Signals): boolean {
-  if (birthOf(member.pid) !== member.birth) return false;
-  try { process.kill(member.pid, signal); return true; } catch { return false; }
+/**
+ * Signal one recorded process only while it is still the same process (start time), never a reused PID.
+ * "gone" means confirmed exited or reused; "failed" means it may still be the recorded process but was not signalled.
+ */
+export function signalProcess(member: ProcessIdentity, signal: NodeJS.Signals): "signalled" | "gone" | "failed" {
+  const birth = birthOf(member.pid);
+  if (birth === null) return processExists(member.pid) ? "failed" : "gone";
+  if (birth !== member.birth) return "gone";
+  try { process.kill(member.pid, signal); return "signalled"; }
+  catch (error) { return (error as NodeJS.ErrnoException).code === "ESRCH" ? "gone" : "failed"; }
+}
+
+function processExists(pid: number): boolean {
+  try { process.kill(pid, 0); return true; }
+  catch (error) { return (error as NodeJS.ErrnoException).code !== "ESRCH"; }
 }
 
 function portOpen(host: string, port: number): Promise<boolean> {
@@ -316,7 +332,9 @@ export async function stopService(record: OwnedProcess): Promise<boolean> {
     : verified.find((group) => group.pgid === pgid)!.members.some((member) => memberStillIn(member, pgid));
   // SIGCONT after SIGTERM: a member paused by `localdev fault` (or by hand) only acts on SIGTERM once continued.
   for (const pgid of targets) {
-    if (stillOwned(pgid)) { try { process.kill(-pgid, "SIGTERM"); process.kill(-pgid, "SIGCONT"); } catch { /* Already exited. */ } }
+    if (!stillOwned(pgid)) continue;
+    try { process.kill(-pgid, "SIGTERM"); } catch { continue; /* Already exited. */ }
+    if (stillOwned(pgid)) { try { process.kill(-pgid, "SIGCONT"); } catch { /* Already exited. */ } }
   }
   const remaining = () => targets.filter(groupExists);
   const deadline = Date.now() + 4_000;

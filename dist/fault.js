@@ -50,7 +50,7 @@ export async function pauseService(receipt, portName) {
     receipt.faults = [...faults, fault];
     // Record before signalling, so stop and --clear can always find a process this command froze.
     await writeReceipt(receipt);
-    const paused = pids.filter((member) => signalProcess(member, "SIGSTOP"));
+    const paused = pids.filter((member) => signalProcess(member, "SIGSTOP") === "signalled");
     if (paused.length !== pids.length) {
         receipt.faults = paused.length ? [...faults, { ...fault, pids: paused }] : faults;
         await writeReceipt(receipt);
@@ -59,11 +59,35 @@ export async function pauseService(receipt, portName) {
     }
     return { ...fault, pids: paused };
 }
-/** Resume the recorded processes that are still the same process; a PID that exited or was reused is skipped. */
+/**
+ * Continue the recorded processes. A PID confirmed exited or reused needs nothing more; one that could not be
+ * signalled may still be paused, so it stays unresolved and keeps its fault record for a later --clear or stop.
+ */
 function resume(fault) {
-    return fault.pids.filter((member) => signalProcess(member, "SIGCONT")).map((member) => member.pid);
+    const resumed = [];
+    const unresolved = [];
+    for (const member of fault.pids) {
+        const outcome = signalProcess(member, "SIGCONT");
+        if (outcome === "signalled")
+            resumed.push(member.pid);
+        else if (outcome === "failed")
+            unresolved.push(member);
+    }
+    return { resumed, unresolved };
 }
-/** Clear one port's fault, or every fault when no port is named. Processes resume before the record goes. */
+/** Faults reduced to their unresolved members; a fault with none left is dropped. */
+function remainingFaults(faults, results) {
+    return faults.flatMap((fault) => {
+        const unresolved = results.get(fault);
+        if (!unresolved)
+            return [fault];
+        return unresolved.length ? [{ ...fault, pids: unresolved }] : [];
+    });
+}
+/**
+ * Clear one port's fault, or every fault when no port is named. Processes resume before the record goes; a process
+ * that could not be resumed keeps its record, and the command fails after saving that, naming the PIDs.
+ */
 export async function clearFaults(receipt, portName) {
     if (portName)
         portNumber(receipt, portName);
@@ -72,14 +96,25 @@ export async function clearFaults(receipt, portName) {
     if (!targets.length) {
         throw new Error(portName ? `No active fault on ${portName} in session ${receipt.id}` : `No active faults in session ${receipt.id}`);
     }
-    const cleared = targets.map((fault) => ({ ...fault, resumed: resume(fault) }));
-    receipt.faults = faults.filter((item) => !targets.includes(item));
+    const results = new Map();
+    const cleared = targets.map((fault) => {
+        const { resumed, unresolved } = resume(fault);
+        results.set(fault, unresolved);
+        return { ...fault, resumed };
+    });
+    receipt.faults = remainingFaults(faults, results);
     await writeReceipt(receipt);
+    const stuck = [...results.values()].flat().map((member) => member.pid);
+    if (stuck.length) {
+        throw new Error(`Could not resume ${stuck.join(", ")} in session ${receipt.id}; the fault is kept, so retry localdev fault ${receipt.id} --clear or stop`);
+    }
     return cleared;
 }
-/** Stop calls this first: a paused process keeps SIGTERM pending until it is continued. The caller writes the receipt. */
+/**
+ * Stop calls this first: a paused process keeps SIGTERM pending until it is continued. Unresolved members stay
+ * recorded, so a stop that cannot verify termination keeps them for inspection. The caller writes the receipt.
+ */
 export function resumeAllFaults(receipt) {
-    for (const fault of receipt.faults ?? [])
-        resume(fault);
-    receipt.faults = [];
+    const faults = receipt.faults ?? [];
+    receipt.faults = remainingFaults(faults, new Map(faults.map((fault) => [fault, resume(fault).unresolved])));
 }
