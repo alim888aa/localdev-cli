@@ -15,6 +15,14 @@ export function birthOf(pid: number): string | null {
   } catch { return null; }
 }
 
+/** The recorded process is still the same one (start time) and still in the group about to be signalled. */
+function memberStillIn(member: { pid: number; birth: string }, pgid: number): boolean {
+  try {
+    const [lstart, group] = [birthOf(member.pid), Number(execFileSync("ps", ["-o", "pgid=", "-p", String(member.pid)], { encoding: "utf8" }).trim())];
+    return lstart === member.birth && group === pgid;
+  } catch { return false; }
+}
+
 function isOwned(record: OwnedProcess): boolean {
   return birthOf(record.pid) === record.birth;
 }
@@ -255,14 +263,14 @@ export async function stopService(record: OwnedProcess): Promise<boolean> {
     .filter((group) => groupExists(group.pgid));
   // An escaped group is signalled only while a recorded member is still the same process (no PID reuse).
   // A live group with no verifiable member fails closed so the receipt is kept for inspection.
-  const verified = known.filter((group) => group.members.some((member) => birthOf(member.pid) === member.birth));
+  const verified = known.filter((group) => group.members.some((member) => memberStillIn(member, group.pgid)));
   const unverified = known.length - verified.length;
   if (!mainAlive && !verified.length) return unverified === 0;
   const targets = [...(mainAlive ? [record.pid] : []), ...verified.map((group) => group.pgid)];
   // Re-check identity before each signal: a group ID can be reused once all of its members exit.
   const stillOwned = (pgid: number) => pgid === record.pid
     ? isOwned(record) || guardOwnsGroup(record)
-    : verified.find((group) => group.pgid === pgid)!.members.some((member) => birthOf(member.pid) === member.birth);
+    : verified.find((group) => group.pgid === pgid)!.members.some((member) => memberStillIn(member, pgid));
   for (const pgid of targets) { if (stillOwned(pgid)) { try { process.kill(-pgid, "SIGTERM"); } catch { /* Already exited. */ } } }
   const remaining = () => targets.filter(groupExists);
   const deadline = Date.now() + 4_000;

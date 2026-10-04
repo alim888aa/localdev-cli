@@ -41,46 +41,53 @@ async function canBind(port) {
         server.listen(port, "127.0.0.1", () => server.close(() => resolve(true)));
     });
 }
+/** Read the owner of the current lock: a lock file, or (from older localdev) a directory holding owner.json. */
+async function lockOwner() {
+    const stat = await fs.stat(lockPath).catch(() => null);
+    if (!stat)
+        return null;
+    const file = stat.isDirectory() ? path.join(lockPath, "owner.json") : lockPath;
+    const owner = await fs.readFile(file, "utf8").then((text) => JSON.parse(text), () => null);
+    return { owner, directory: stat.isDirectory(), modifiedMs: stat.mtimeMs };
+}
 async function acquireLock() {
     await fs.mkdir(stateRoot, { recursive: true, mode: 0o700 });
     const token = randomUUID();
-    const ownerFile = path.join(lockPath, "owner.json");
     for (let attempt = 0; attempt < 600; attempt++) {
-        // Build the lock with its owner file, then rename it into place: the lock never exists without an owner.
+        // Write the owner record first, then hard-link it into place. link() never replaces an existing
+        // file or directory, so a live holder's lock (new or legacy) can't be taken over.
         const staging = `${lockPath}.${process.pid}.${token}`;
-        await fs.mkdir(staging, { mode: 0o700 });
-        await fs.writeFile(path.join(staging, "owner.json"), JSON.stringify({ pid: process.pid, time: Date.now(), token }));
+        await fs.writeFile(staging, JSON.stringify({ pid: process.pid, time: Date.now(), token }), { mode: 0o600 });
         try {
-            await fs.rename(staging, lockPath);
+            await fs.link(staging, lockPath);
             return async () => {
                 // Release only our own lock, never one another process reclaimed after ours went stale.
-                const owner = await fs.readFile(ownerFile, "utf8").then((text) => JSON.parse(text), () => null);
-                if (owner?.token === token)
-                    await fs.rm(lockPath, { recursive: true, force: true });
+                const current = await lockOwner();
+                if (current?.owner?.token === token && !current.directory)
+                    await fs.rm(lockPath, { force: true });
             };
         }
         catch (error) {
-            await fs.rm(staging, { recursive: true, force: true });
-            const code = error.code;
-            if (code !== "EEXIST" && code !== "ENOTEMPTY" && code !== "EISDIR" && code !== "EPERM")
+            if (error.code !== "EEXIST")
                 throw error;
-            try {
-                const owner = JSON.parse(await fs.readFile(ownerFile, "utf8"));
-                if (Date.now() - owner.time > 30_000 && !pidExists(owner.pid)) {
+            const current = await lockOwner();
+            if (current?.owner) {
+                if (Date.now() - current.owner.time > 30_000 && !pidExists(current.owner.pid)) {
                     await fs.rm(lockPath, { recursive: true, force: true });
                     continue;
                 }
             }
-            catch {
-                // Only a localdev older than atomic locks can leave a lock without an owner file.
-                const created = await fs.stat(lockPath).then((stat) => stat.mtimeMs, () => undefined);
-                if (created !== undefined && Date.now() - created > 30_000) {
-                    await fs.rm(lockPath, { recursive: true, force: true });
-                    continue;
-                }
+            else if (current?.directory && Date.now() - current.modifiedMs > 30_000) {
+                // Only an older localdev leaves a lock directory without an owner file. After 30 s its writer
+                // is presumed dead; a legacy writer paused longer than that is a known mixed-version limit.
+                await fs.rm(lockPath, { recursive: true, force: true });
+                continue;
             }
-            await new Promise((resolve) => setTimeout(resolve, 100));
         }
+        finally {
+            await fs.rm(staging, { force: true });
+        }
+        await new Promise((resolve) => setTimeout(resolve, 100));
     }
     throw new Error("Timed out waiting for the local session allocation lock");
 }

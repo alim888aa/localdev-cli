@@ -170,13 +170,16 @@ function ghFailure(error) {
     const definite = failure.code === "ENOENT" || failure.status === 4 || /\bHTTP 4\d\d\b/.test(stderr);
     return { definite, message };
 }
-/** After an ambiguous POST, look for an issue with this exact title and body created in the last 15 minutes. */
-function findCreated(title, body) {
-    const since = new Date(Date.now() - 15 * 60_000).toISOString();
-    const recent = JSON.parse(execFileSync("gh", ["api", `repos/${REPO}/issues?state=all&sort=created&direction=desc&per_page=30&since=${since}`], {
+/**
+ * After an ambiguous POST, look for an issue with this exact title and body that was CREATED after the POST
+ * began (with a minute of clock skew). GitHub's `since` filters by update time, so creation is checked here.
+ */
+function findCreated(title, body, postStartedAt) {
+    const recent = JSON.parse(execFileSync("gh", ["api", `repos/${REPO}/issues?state=all&sort=created&direction=desc&per_page=30`], {
         encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
     }));
-    return recent.find((item) => !item.pull_request && item.title === title && (item.body ?? "").trim() === body.trim()) ?? null;
+    return recent.find((item) => !item.pull_request && item.title === title && (item.body ?? "").trim() === body.trim()
+        && Date.parse(item.created_at) >= postStartedAt - 60_000) ?? null;
 }
 // REST rather than `gh issue create`: cloud sandboxes block GitHub GraphQL but allow REST.
 async function publish(title, body, label) {
@@ -185,6 +188,7 @@ async function publish(title, body, label) {
     try {
         await fs.writeFile(bodyFile, body, { mode: 0o600 });
         let created;
+        const postStartedAt = Date.now();
         try {
             created = JSON.parse(execFileSync("gh", [
                 "api", `repos/${REPO}/issues`, "-X", "POST",
@@ -197,7 +201,7 @@ async function publish(title, body, label) {
                 throw new NotPublishedError(failure.message);
             // The request may have reached GitHub before the response was lost.
             try {
-                created = findCreated(title, body);
+                created = findCreated(title, body, postStartedAt);
             }
             catch {
                 created = null;

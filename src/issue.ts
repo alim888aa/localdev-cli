@@ -168,13 +168,16 @@ function ghFailure(error: unknown): { definite: boolean; message: string } {
   return { definite, message };
 }
 
-/** After an ambiguous POST, look for an issue with this exact title and body created in the last 15 minutes. */
-function findCreated(title: string, body: string): { number: number; html_url: string } | null {
-  const since = new Date(Date.now() - 15 * 60_000).toISOString();
-  const recent = JSON.parse(execFileSync("gh", ["api", `repos/${REPO}/issues?state=all&sort=created&direction=desc&per_page=30&since=${since}`], {
+/**
+ * After an ambiguous POST, look for an issue with this exact title and body that was CREATED after the POST
+ * began (with a minute of clock skew). GitHub's `since` filters by update time, so creation is checked here.
+ */
+function findCreated(title: string, body: string, postStartedAt: number): { number: number; html_url: string } | null {
+  const recent = JSON.parse(execFileSync("gh", ["api", `repos/${REPO}/issues?state=all&sort=created&direction=desc&per_page=30`], {
     encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
-  })) as Array<{ number: number; html_url: string; title: string; body: string | null; pull_request?: unknown }>;
-  return recent.find((item) => !item.pull_request && item.title === title && (item.body ?? "").trim() === body.trim()) ?? null;
+  })) as Array<{ number: number; html_url: string; title: string; body: string | null; created_at: string; pull_request?: unknown }>;
+  return recent.find((item) => !item.pull_request && item.title === title && (item.body ?? "").trim() === body.trim()
+    && Date.parse(item.created_at) >= postStartedAt - 60_000) ?? null;
 }
 
 // REST rather than `gh issue create`: cloud sandboxes block GitHub GraphQL but allow REST.
@@ -184,6 +187,7 @@ async function publish(title: string, body: string, label: string): Promise<stri
   try {
     await fs.writeFile(bodyFile, body, { mode: 0o600 });
     let created: { number: number; html_url: string } | null;
+    const postStartedAt = Date.now();
     try {
       created = JSON.parse(execFileSync("gh", [
         "api", `repos/${REPO}/issues`, "-X", "POST",
@@ -193,7 +197,7 @@ async function publish(title: string, body: string, label: string): Promise<stri
       const failure = ghFailure(error);
       if (failure.definite) throw new NotPublishedError(failure.message);
       // The request may have reached GitHub before the response was lost.
-      try { created = findCreated(title, body); }
+      try { created = findCreated(title, body, postStartedAt); }
       catch { created = null; }
       if (!created) throw new Error(`Publishing outcome unknown (${failure.message}). Check ${REPO} for an issue titled "${title}" before retrying.`);
     }
