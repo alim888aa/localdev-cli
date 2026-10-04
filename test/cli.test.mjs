@@ -15,7 +15,7 @@ const adapter = path.join(root, "test", "fixture.adapter.mjs");
 
 // A zombie has exited even though kill(pid, 0) still succeeds on it; some sandboxes' PID 1 reaps them slowly.
 function running(pid) {
-  try { process.kill(pid, 0); } catch { return false; }
+  try { process.kill(pid, 0); } catch (error) { return error.code !== "ESRCH"; } // EPERM: exists, not ours
   try {
     const stat = execFileSync("ps", ["-o", "stat=", "-p", String(pid)], { encoding: "utf8" }).trim();
     return !stat.startsWith("Z");
