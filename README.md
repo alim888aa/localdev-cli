@@ -106,7 +106,11 @@ If it creates credentials, put them in a `0600` file inside `sessionDir` and
 return only its path as `credentialsFile`.
 
 Receipts and logs live in `~/.local/state/local-cli/sessions/<id>/` by default.
-Set `LOCAL_CLI_STATE_DIR` to move them. `stop <id>` removes only that session's
+Set `LOCAL_CLI_STATE_DIR` to move them. Port allocation is serialized by a lock
+that listens on a loopback port derived from the state directory (10000–19999);
+the operating system frees it if the holder dies, so it can never go stale. If
+another program uses that port, set `LOCAL_CLI_LOCK_PORT`, and set the same
+value for every localdev process that shares the state directory. `stop <id>` removes only that session's
 processes and directory. Each service and seed runs under a persistent process
 group supervisor, so `stop` can still kill a server left behind by an exited
 launcher. A guard in the same group keeps ownership verifiable if the supervisor

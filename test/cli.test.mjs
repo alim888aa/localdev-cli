@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile, execFileSync, spawn } from "node:child_process";
 import { mkdir, mkdtemp, readFile, readdir, rm, symlink, utimes, writeFile } from "node:fs/promises";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -498,6 +499,30 @@ test("a lock held by a live owner is never taken, and is reclaimed once that own
     await exec(process.execPath, [cli, "stop", receipt.id], { env, cwd: root });
   } finally {
     owner.kill();
+    startup?.kill();
+    await rm(state, { recursive: true, force: true });
+  }
+});
+
+test("startup waits while another process holds the allocation port lock, then proceeds", async () => {
+  const state = await mkdtemp(path.join(os.tmpdir(), "local-cli-port-lock-"));
+  const holder = net.createServer();
+  await new Promise((resolve) => holder.listen({ host: "127.0.0.1", port: 0, exclusive: true }, resolve));
+  const env = { ...process.env, LOCAL_CLI_STATE_DIR: state, LOCAL_CLI_LOCK_PORT: String(holder.address().port) };
+  let startup;
+  try {
+    let output = "";
+    startup = spawn(process.execPath, [cli, "startup", "--project", root, "--adapter", adapter], { env, cwd: root });
+    startup.stdout.on("data", (chunk) => { output += chunk; });
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    assert.equal(startup.exitCode, null, "startup waits while the lock port is held");
+    await new Promise((resolve) => holder.close(resolve));
+    assert.equal(await new Promise((resolve) => startup.once("exit", resolve)), 0);
+    const receipt = JSON.parse(output);
+    assert.equal(receipt.state, "ready");
+    await exec(process.execPath, [cli, "stop", receipt.id], { env, cwd: root });
+  } finally {
+    holder.close();
     startup?.kill();
     await rm(state, { recursive: true, force: true });
   }
