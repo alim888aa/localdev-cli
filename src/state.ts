@@ -56,6 +56,32 @@ async function lockOwner(): Promise<{ owner: LockOwner | null; directory: boolea
   return { owner, directory: stat.isDirectory(), modifiedMs: stat.mtimeMs };
 }
 
+/**
+ * Remove a stale lock only if it is still the one we judged stale. The lock is first moved aside atomically;
+ * if what was moved is a newer holder's lock (another reclaimer got there first), it is put back.
+ */
+const identity = (owner: LockOwner | null) => owner ? `${owner.pid}:${owner.time}:${owner.token ?? ""}` : "none";
+
+async function reclaim(stale: { identity: string; directory: boolean }): Promise<void> {
+  const aside = `${lockPath}.reclaim.${process.pid}.${randomUUID()}`;
+  try { await fs.rename(lockPath, aside); }
+  catch { return; } // Already gone or replaced; the next attempt re-reads it.
+  const moved = await fs.stat(aside).then(async (stat) => {
+    const file = stat.isDirectory() ? path.join(aside, "owner.json") : aside;
+    const owner = await fs.readFile(file, "utf8").then((text) => JSON.parse(text) as LockOwner, () => null);
+    return { directory: stat.isDirectory(), identity: identity(owner) };
+  }, () => null);
+  if (moved && moved.directory === stale.directory && moved.identity === stale.identity) {
+    await fs.rm(aside, { recursive: true, force: true });
+    return;
+  }
+  // Not the stale lock: restore it. link/rename fail rather than overwrite a lock created meanwhile.
+  try {
+    if (moved?.directory) await fs.rename(aside, lockPath);
+    else { await fs.link(aside, lockPath); await fs.rm(aside, { force: true }); }
+  } catch { /* A third acquirer took the empty slot in that instant; leave the moved lock for inspection. */ }
+}
+
 async function acquireLock(): Promise<() => Promise<void>> {
   await fs.mkdir(stateRoot, { recursive: true, mode: 0o700 });
   const token = randomUUID();
@@ -76,13 +102,13 @@ async function acquireLock(): Promise<() => Promise<void>> {
       const current = await lockOwner();
       if (current?.owner) {
         if (Date.now() - current.owner.time > 30_000 && !pidExists(current.owner.pid)) {
-          await fs.rm(lockPath, { recursive: true, force: true });
+          await reclaim({ identity: identity(current.owner), directory: current.directory });
           continue;
         }
       } else if (current?.directory && Date.now() - current.modifiedMs > 30_000) {
         // Only an older localdev leaves a lock directory without an owner file. After 30 s its writer
         // is presumed dead; a legacy writer paused longer than that is a known mixed-version limit.
-        await fs.rm(lockPath, { recursive: true, force: true });
+        await reclaim({ identity: "none", directory: true });
         continue;
       }
     } finally {
