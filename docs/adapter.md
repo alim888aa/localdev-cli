@@ -62,6 +62,13 @@ needs a generated, session-specific config with *all* emulator ports changed;
 see SkateBhoarder's `local.adapter.mjs` for a working example. The shared CLI
 does not guess which framework or Firebase services a project uses.
 
+## Faults
+
+`localdev fault <id> <port> --mode pause` freezes the process listening on one
+declared port. If verifiers need to fail one service alone, run it as its own
+process on its own port; services sharing a process freeze together. The adapter
+needs no extra declaration.
+
 ## Cross-project isolation
 
 All installations on the same machine use the same state directory and port

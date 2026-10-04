@@ -7,11 +7,12 @@ import { pathToFileURL } from "node:url";
 import { birthOf, processAlive, processHealth, spawnSeed, spawnService, stopService, waitForSeed, waitForService } from "./process.js";
 import { listReceipts, readReceipt, reserveSession, sessionPath, writeReceipt } from "./state.js";
 import { issueCommand } from "./issue.js";
+import { clearFaults, isFaultMode, pauseService, resumeAllFaults } from "./fault.js";
 import { helpFor } from "./help.js";
 import type { ProjectAdapter, SessionReceipt } from "./types.js";
 
 function usage(): never {
-  throw new Error("Usage: localdev startup [fixture] [--project DIR] [--adapter FILE] [--replace [ID] | --parallel] | status [ID] | stop ID | issue bug|request [--input FILE] [--project DIR] [--session ID] [--cli-ref SHA] [--submit]");
+  throw new Error("Usage: localdev startup [fixture] [--project DIR] [--adapter FILE] [--replace [ID] | --parallel] | status [ID] | stop ID | fault ID [PORT] --mode pause|--clear | issue bug|request [--input FILE] [--project DIR] [--session ID] [--cli-ref SHA] [--submit]");
 }
 
 function option(args: string[], name: string): string | undefined {
@@ -167,6 +168,7 @@ async function publicReceipt(receipt: SessionReceipt): Promise<object> {
     credentialsFile: receipt.credentialsFile,
     logs: receipt.processes.map(({ name, log }) => ({ name, path: log })),
     processes,
+    faults: receipt.faults ?? [],
     error: receipt.error,
   };
 }
@@ -293,8 +295,19 @@ async function startup(args: string[]): Promise<void> {
 }
 
 async function status(id?: string): Promise<void> {
-  const receipts = id ? [await readReceipt(id)] : await listReceipts();
-  console.log(JSON.stringify(await Promise.all(receipts.map(publicReceipt)), null, 2));
+  if (id) {
+    let receipt: SessionReceipt;
+    try { receipt = await readReceipt(id); }
+    catch (error) {
+      // stop removes the session, so a stopped or unknown ID is reported, not thrown (like stop's alreadyGone).
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      console.log(JSON.stringify([{ id, state: "gone" }], null, 2));
+      return;
+    }
+    console.log(JSON.stringify([await publicReceipt(receipt)], null, 2));
+    return;
+  }
+  console.log(JSON.stringify(await Promise.all((await listReceipts()).map(publicReceipt)), null, 2));
 }
 
 async function stop(id?: string): Promise<void> {
@@ -312,9 +325,31 @@ async function stop(id?: string): Promise<void> {
   console.log(JSON.stringify({ id, stopped: true }));
 }
 
+async function fault(args: string[]): Promise<void> {
+  const [id, second] = args;
+  if (!id || id.startsWith("--")) usage();
+  const portName = second && !second.startsWith("--") ? second : undefined;
+  const mode = option(args, "--mode");
+  const clear = args.includes("--clear");
+  if (Boolean(mode) === clear) throw new Error("Choose either --mode pause or --clear");
+  if (mode && !portName) throw new Error("Name the port to fault, e.g. localdev fault <id> dataconnect --mode pause");
+  if (mode && !isFaultMode(mode)) throw new Error(`Unsupported fault mode ${mode}; supported: pause`);
+  let receipt: SessionReceipt;
+  try { receipt = await readReceipt(id); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") throw new Error(`No session ${id}; it is unknown or already stopped`);
+    throw error;
+  }
+  const result = clear
+    ? { id, cleared: await clearFaults(receipt, portName) }
+    : { id, fault: await pauseService(receipt, portName!) };
+  console.log(JSON.stringify(result, null, 2));
+}
+
 async function stopReceipt(receipt: SessionReceipt): Promise<void> {
   const id = receipt.id;
   receipt.state = "stopping";
+  resumeAllFaults(receipt);
   await writeReceipt(receipt);
   for (const owned of [...receipt.processes].reverse()) {
     if (!(await stopService(owned))) {
@@ -339,6 +374,7 @@ async function main(): Promise<void> {
   if (command === "startup") await startup(args);
   else if (command === "status") await status(args[0]);
   else if (command === "stop") await stop(args[0]);
+  else if (command === "fault") await fault(args);
   else if (command === "issue") await issueCommand(args);
   else usage();
 }

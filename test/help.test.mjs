@@ -21,6 +21,8 @@ test("help works from a project with no adapter or GitHub access", async () => {
       [["help", "startup"], "defaultFixture"],
       [["status", "--help"], "localdev status [ID]"],
       [["help", "stop"], "localdev stop ID"],
+      [["help", "fault"], "localdev fault ID PORT --mode pause"],
+      [["fault", "--help"], "localdev fault ID --clear"],
       [["issue", "--help"], "authenticated gh access"],
       [["issue", "bug", "--help"], "JSON input requires: title, summary, expected, steps, impact"],
       [["help", "issue", "request"], "JSON input requires: title, task, desired, whyShared, acceptance"],

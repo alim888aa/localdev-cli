@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, rm, symlink, unlink, writeFile } from "node:fs/promises
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { linuxListenerOwned } from "../dist/linux-listener.js";
+import { linuxListenerOwned, linuxListenerPids } from "../dist/linux-listener.js";
 
 test("Linux listener ownership follows socket inodes and rejects a port takeover", async () => {
   const proc = await mkdtemp(path.join(os.tmpdir(), "localdev-proc-"));
@@ -21,10 +21,13 @@ test("Linux listener ownership follows socket inodes and rejects a port takeover
     const otherFd = path.join(proc, "5313", "fd", "3");
     await symlink("socket:[123456]", ownedFd);
     assert.equal(linuxListenerOwned(40000, 4312, proc), true);
+    assert.deepEqual(linuxListenerPids(40000, proc), [4313]);
+    assert.deepEqual(linuxListenerPids(40001, proc), []);
 
     await unlink(ownedFd);
     await symlink("socket:[123456]", otherFd);
     assert.equal(linuxListenerOwned(40000, 4312, proc), false);
+    assert.deepEqual(linuxListenerPids(40000, proc), [5313], "listener PIDs are reported whoever owns them");
     assert.equal(linuxListenerOwned(40001, 4312, proc), false);
   } finally {
     await rm(proc, { recursive: true, force: true });
