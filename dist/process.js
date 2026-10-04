@@ -41,10 +41,20 @@ function guardOwnsGroup(record) {
 function groupExists(pgid) {
     try {
         process.kill(-pgid, 0);
-        return true;
     }
     catch {
         return false;
+    }
+    // Exited members stay signalable as zombies until reaped, and some sandboxes' PID 1 reaps slowly.
+    // Only a live member means the group is still running.
+    try {
+        return execFileSync("ps", ["-A", "-o", "pgid=,stat="], { encoding: "utf8" }).split("\n").some((line) => {
+            const [group, stat] = line.trim().split(/\s+/);
+            return Number(group) === pgid && Boolean(stat) && !stat.startsWith("Z");
+        });
+    }
+    catch {
+        return true;
     }
 }
 function descendsFromGroup(pid, pgid) {
