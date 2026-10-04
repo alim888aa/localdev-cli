@@ -294,8 +294,9 @@ export async function stopService(record: OwnedProcess): Promise<boolean> {
   return remaining().length === 0 && unverified === 0;
 }
 
+/** The owned group still has a live (non-zombie) member and its identity checks out. */
 export function processAlive(record: OwnedProcess): boolean {
-  return isOwned(record) || guardOwnsGroup(record);
+  return groupExists(record.pid) && (isOwned(record) || guardOwnsGroup(record));
 }
 
 export async function processHealth(record: OwnedProcess): Promise<{ reachable: boolean | null; listenerOwned: boolean | null; checks: Array<{ name: string; reachable: boolean; listenerOwned: boolean }>; commandExit: object | null }> {

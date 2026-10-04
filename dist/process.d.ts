@@ -18,6 +18,7 @@ export declare function waitForSeed(child: ChildProcess, exitFile: string, timeo
  * moved into their own groups. Returns false unless every owned group is verified gone.
  */
 export declare function stopService(record: OwnedProcess): Promise<boolean>;
+/** The owned group still has a live (non-zombie) member and its identity checks out. */
 export declare function processAlive(record: OwnedProcess): boolean;
 export declare function processHealth(record: OwnedProcess): Promise<{
     reachable: boolean | null;

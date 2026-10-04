@@ -13,6 +13,15 @@ const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const cli = path.join(root, "dist", "cli.js");
 const adapter = path.join(root, "test", "fixture.adapter.mjs");
 
+// A zombie has exited even though kill(pid, 0) still succeeds on it; some sandboxes' PID 1 reaps them slowly.
+function running(pid) {
+  try { process.kill(pid, 0); } catch { return false; }
+  try {
+    const stat = execFileSync("ps", ["-o", "stat=", "-p", String(pid)], { encoding: "utf8" }).trim();
+    return !stat.startsWith("Z");
+  } catch { return true; } // If ps can't tell, assume it still runs so a "stopped" assertion can't pass by accident.
+}
+
 async function waitUntil(check, timeoutMs = 5000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -22,6 +31,21 @@ async function waitUntil(check, timeoutMs = 5000) {
   }
   throw new Error("Timed out waiting for test condition");
 }
+
+test("the liveness helper counts live and stopped processes as running and exited ones as not", async () => {
+  const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 60000)"], { stdio: "ignore" });
+  try {
+    await new Promise((resolve) => child.once("spawn", resolve));
+    assert.equal(running(child.pid), true);
+    process.kill(child.pid, "SIGSTOP");
+    assert.equal(running(child.pid), true, "a stopped process still runs");
+    process.kill(child.pid, "SIGCONT");
+  } finally {
+    child.kill("SIGKILL");
+  }
+  await new Promise((resolve) => child.once("exit", resolve));
+  await waitUntil(() => !running(child.pid));
+});
 
 test("concurrent sessions have separate ports/data and stop independently", async () => {
   const state = await mkdtemp(path.join(os.tmpdir(), "local-cli-test-"));
@@ -90,13 +114,13 @@ test("duplicate startup requires a choice and replace stops only the selected se
     assert.notEqual(replacement.id, parallel.id);
     assert.equal((await run("status")).length, 2);
     assert.ok(!(await run("status")).some(item => item.id === parallel.id));
-    assert.throws(() => process.kill(parallel.processes[0].pid, 0), { code: "ESRCH" });
+    assert.equal(running(parallel.processes[0].pid), false);
     assert.equal((await fetch(first.urls.app)).status, 200);
     assert.equal((await fetch(replacement.urls.app)).status, 200);
     await run("stop", first.id);
     bareReplacement = await run("startup", "base", "--replace", "--project", root, "--adapter", adapter);
     assert.ok(!(await run("status")).some(item => item.id === replacement.id));
-    assert.throws(() => process.kill(replacement.processes[0].pid, 0), { code: "ESRCH" });
+    assert.equal(running(replacement.processes[0].pid), false);
     assert.equal((await fetch(bareReplacement.urls.app)).status, 200);
   } finally {
     for (const item of [first, parallel, replacement, bareReplacement]) {
@@ -361,8 +385,7 @@ test("a timed-out seed fails startup and is stopped", async () => {
     assert.equal(receipt.processes.find((item) => item.name === "seed").alive, false);
     const seedPid = Number(await readFile(path.join(receipt.dataDir, "seed.pid"), "utf8"));
     await waitUntil(() => {
-      try { process.kill(seedPid, 0); return false; }
-      catch { return true; }
+      return !running(seedPid);
     });
     await run("stop", receipt.id);
   } finally {
@@ -465,7 +488,7 @@ test("stop kills a non-listening helper that escaped the session group after rea
   try {
     receipt = await run("startup", "late-escape", "--project", root, "--adapter", adapter);
     const helper = Number(await waitUntil(() => readFile(path.join(receipt.dataDir, "helper.pid"), "utf8").catch(() => null)));
-    const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+    const alive = running;
     assert.ok(alive(helper));
     await run("stop", receipt.id);
     assert.ok(!alive(helper), "the late escaped helper is stopped");
@@ -573,7 +596,7 @@ test("stop kills an in-flight seed after startup is killed", async () => {
     await new Promise((resolve) => startup.once("exit", resolve));
     await run("stop", receipt.id);
     await waitUntil(() => {
-      try { process.kill(seedPid, 0); return false; } catch { return true; }
+      return !running(seedPid);
     });
     assert.deepEqual(await run("status"), []);
   } finally {

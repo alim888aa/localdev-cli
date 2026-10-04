@@ -331,8 +331,9 @@ export async function stopService(record) {
     }
     return remaining().length === 0 && unverified === 0;
 }
+/** The owned group still has a live (non-zombie) member and its identity checks out. */
 export function processAlive(record) {
-    return isOwned(record) || guardOwnsGroup(record);
+    return groupExists(record.pid) && (isOwned(record) || guardOwnsGroup(record));
 }
 export async function processHealth(record) {
     let commandExit = null;
