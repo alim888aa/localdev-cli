@@ -5,6 +5,8 @@ Usage:
   localdev startup [fixture] [--project DIR] [--adapter FILE] [--replace [ID] | --parallel]
   localdev status [ID]
   localdev stop ID
+  localdev fault ID PORT --mode pause
+  localdev fault ID [PORT] --clear
   localdev issue bug|request [options]
   localdev help [command]
 
@@ -13,9 +15,10 @@ Examples:
   localdev startup messages
   localdev status
   localdev stop <session-id>
+  localdev fault <session-id> dataconnect --mode pause
   localdev issue bug
 
-Run "localdev help startup|status|stop|issue" for details. Each project defines
+Run "localdev help startup|status|stop|fault|issue" for details. Each project defines
 its own fixtures in local.adapter.mjs and should list them in its agent guide.`,
     startup: `Start an isolated app and emulator session from a project checkout.
 
@@ -46,20 +49,43 @@ Examples:
 Usage: localdev status [ID]
 
   localdev status       List every session on this machine.
-  localdev status <id>  Show one session.
+  localdev status <id>  Show one session. A stopped or unknown ID prints
+                        [{"id": "<id>", "state": "gone"}] and exits 0.
 
 The JSON includes checkout commit, URLs, ports, logs, and process health.
-A degraded session may have a dead server or a port owned by another process.`,
+A degraded session may have a dead server or a port owned by another process.
+Services paused with localdev fault are listed under faults. A paused service
+still accepts TCP connections, so its process shows reachable: true; check
+faults, not reachable, to see what is frozen.`,
     stop: `Stop and clean up one localdev session.
 
 Usage: localdev stop ID
 
 Get the ID from startup or status. The command stops only that session's owned
-processes and removes its files and data. If ownership cannot be verified, it
+processes and removes its files and data. Paused services are resumed first,
+so stop never waits on a frozen process. If ownership cannot be verified, it
 keeps the receipt for inspection instead of claiming success.
 
 Example:
   localdev stop <session-id>`,
+    fault: `Make one service of a session fail on purpose, then restore it.
+
+Usage:
+  localdev fault ID PORT --mode pause   Freeze the service listening on PORT.
+  localdev fault ID PORT --clear        Resume that service.
+  localdev fault ID --clear             Resume every paused service.
+
+PORT is a port name from the session's receipt, such as app or dataconnect.
+pause freezes only the session's own process listening on that port, so
+clients connect but get no response and time out. The service keeps its data;
+other services keep running. A process serving several ports freezes all of
+them; the fault's sharedPorts lists them. status shows active faults (a paused
+service still reads reachable: true), and stop resumes and stops paused
+services. Only pause is supported.
+
+Examples:
+  localdev fault <session-id> dataconnect --mode pause
+  localdev fault <session-id> dataconnect --clear`,
     issue: `Draft or publish a standard issue for the shared localdev CLI.
 
 Usage:

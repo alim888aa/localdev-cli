@@ -7,9 +7,10 @@ import { pathToFileURL } from "node:url";
 import { birthOf, processAlive, processHealth, spawnSeed, spawnService, stopService, waitForSeed, waitForService } from "./process.js";
 import { listReceipts, readReceipt, reserveSession, sessionPath, writeReceipt } from "./state.js";
 import { issueCommand } from "./issue.js";
+import { clearFaults, isFaultMode, pauseService, resumeAllFaults } from "./fault.js";
 import { helpFor } from "./help.js";
 function usage() {
-    throw new Error("Usage: localdev startup [fixture] [--project DIR] [--adapter FILE] [--replace [ID] | --parallel] | status [ID] | stop ID | issue bug|request [--input FILE] [--project DIR] [--session ID] [--cli-ref SHA] [--submit]");
+    throw new Error("Usage: localdev startup [fixture] [--project DIR] [--adapter FILE] [--replace [ID] | --parallel] | status [ID] | stop ID | fault ID [PORT] --mode pause|--clear | issue bug|request [--input FILE] [--project DIR] [--session ID] [--cli-ref SHA] [--submit]");
 }
 function option(args, name) {
     const index = args.indexOf(name);
@@ -170,6 +171,7 @@ async function publicReceipt(receipt) {
         credentialsFile: receipt.credentialsFile,
         logs: receipt.processes.map(({ name, log }) => ({ name, path: log })),
         processes,
+        faults: receipt.faults ?? [],
         error: receipt.error,
     };
 }
@@ -315,8 +317,22 @@ async function startup(args) {
     }
 }
 async function status(id) {
-    const receipts = id ? [await readReceipt(id)] : await listReceipts();
-    console.log(JSON.stringify(await Promise.all(receipts.map(publicReceipt)), null, 2));
+    if (id) {
+        let receipt;
+        try {
+            receipt = await readReceipt(id);
+        }
+        catch (error) {
+            // stop removes the session, so a stopped or unknown ID is reported, not thrown (like stop's alreadyGone).
+            if (error.code !== "ENOENT")
+                throw error;
+            console.log(JSON.stringify([{ id, state: "gone" }], null, 2));
+            return;
+        }
+        console.log(JSON.stringify([await publicReceipt(receipt)], null, 2));
+        return;
+    }
+    console.log(JSON.stringify(await Promise.all((await listReceipts()).map(publicReceipt)), null, 2));
 }
 async function stop(id) {
     if (!id)
@@ -335,9 +351,37 @@ async function stop(id) {
     await stopReceipt(receipt);
     console.log(JSON.stringify({ id, stopped: true }));
 }
+async function fault(args) {
+    const [id, second] = args;
+    if (!id || id.startsWith("--"))
+        usage();
+    const portName = second && !second.startsWith("--") ? second : undefined;
+    const mode = option(args, "--mode");
+    const clear = args.includes("--clear");
+    if (Boolean(mode) === clear)
+        throw new Error("Choose either --mode pause or --clear");
+    if (mode && !portName)
+        throw new Error("Name the port to fault, e.g. localdev fault <id> dataconnect --mode pause");
+    if (mode && !isFaultMode(mode))
+        throw new Error(`Unsupported fault mode ${mode}; supported: pause`);
+    let receipt;
+    try {
+        receipt = await readReceipt(id);
+    }
+    catch (error) {
+        if (error.code === "ENOENT")
+            throw new Error(`No session ${id}; it is unknown or already stopped`);
+        throw error;
+    }
+    const result = clear
+        ? { id, cleared: await clearFaults(receipt, portName) }
+        : { id, fault: await pauseService(receipt, portName) };
+    console.log(JSON.stringify(result, null, 2));
+}
 async function stopReceipt(receipt) {
     const id = receipt.id;
     receipt.state = "stopping";
+    resumeAllFaults(receipt);
     await writeReceipt(receipt);
     for (const owned of [...receipt.processes].reverse()) {
         if (!(await stopService(owned))) {
@@ -364,6 +408,8 @@ async function main() {
         await status(args[0]);
     else if (command === "stop")
         await stop(args[0]);
+    else if (command === "fault")
+        await fault(args);
     else if (command === "issue")
         await issueCommand(args);
     else

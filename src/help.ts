@@ -56,7 +56,9 @@ Usage: localdev status [ID]
 
 The JSON includes checkout commit, URLs, ports, logs, and process health.
 A degraded session may have a dead server or a port owned by another process.
-Services paused with localdev fault are listed under faults.`,
+Services paused with localdev fault are listed under faults. A paused service
+still accepts TCP connections, so its process shows reachable: true; check
+faults, not reachable, to see what is frozen.`,
 
   stop: `Stop and clean up one localdev session.
 
@@ -81,8 +83,9 @@ PORT is a port name from the session's receipt, such as app or dataconnect.
 pause freezes only the session's own process listening on that port, so
 clients connect but get no response and time out. The service keeps its data;
 other services keep running. A process serving several ports freezes all of
-them; the fault's sharedPorts lists them. status shows active faults, and stop
-resumes and stops paused services. Only pause is supported.
+them; the fault's sharedPorts lists them. status shows active faults (a paused
+service still reads reachable: true), and stop resumes and stops paused
+services. Only pause is supported.
 
 Examples:
   localdev fault <session-id> dataconnect --mode pause

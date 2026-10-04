@@ -51,8 +51,9 @@ session's own process listening on that port, after checking it belongs to the
 session's process groups. Clients still connect but get no response and time out;
 the service keeps its data and other services keep running. A process that serves
 several ports freezes all of them, listed in the fault's `sharedPorts`. `status`
-lists active faults under `faults`, and `stop` resumes paused services before
-stopping them. Only `pause` exists today; refusing or slowing requests does not.
+lists active faults under `faults`. A paused service still accepts TCP
+connections, so its process keeps `reachable: true`; read `faults` to see what is
+frozen. `stop` resumes paused services before stopping them. Only `pause` exists today; refusing or slowing requests does not.
 
 ## File an issue
 

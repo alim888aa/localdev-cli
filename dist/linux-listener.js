@@ -64,6 +64,25 @@ function belongsToGroup(pid, group, table) {
     }
     return false;
 }
+function holdsSocket(pid, inodes, procRoot) {
+    let descriptors;
+    try {
+        descriptors = readdirSync(path.join(procRoot, String(pid), "fd"));
+    }
+    catch {
+        return false;
+    }
+    for (const descriptor of descriptors) {
+        try {
+            const target = readlinkSync(path.join(procRoot, String(pid), "fd", descriptor));
+            const inode = /^socket:\[(\d+)\]$/.exec(target)?.[1];
+            if (inode && inodes.has(inode))
+                return true;
+        }
+        catch { /* A descriptor may close during inspection. */ }
+    }
+    return false;
+}
 /** null means procfs is unavailable; false means no verified owned listener. */
 export function linuxListenerOwned(port, group, procRoot = "/proc") {
     const inodes = listenerInodes(port, procRoot);
@@ -75,24 +94,20 @@ export function linuxListenerOwned(port, group, procRoot = "/proc") {
     if (!table)
         return null;
     for (const pid of table.keys()) {
-        if (!belongsToGroup(pid, group, table))
-            continue;
-        let descriptors;
-        try {
-            descriptors = readdirSync(path.join(procRoot, String(pid), "fd"));
-        }
-        catch {
-            continue;
-        }
-        for (const descriptor of descriptors) {
-            try {
-                const target = readlinkSync(path.join(procRoot, String(pid), "fd", descriptor));
-                const inode = /^socket:\[(\d+)\]$/.exec(target)?.[1];
-                if (inode && inodes.has(inode))
-                    return true;
-            }
-            catch { /* A descriptor may close during inspection. */ }
-        }
+        if (belongsToGroup(pid, group, table) && holdsSocket(pid, inodes, procRoot))
+            return true;
     }
     return false;
+}
+/** Every PID holding a TCP listener on the port, whoever owns it; null means procfs is unavailable. */
+export function linuxListenerPids(port, procRoot = "/proc") {
+    const inodes = listenerInodes(port, procRoot);
+    if (!inodes)
+        return null;
+    if (inodes.size === 0)
+        return [];
+    const table = processTable(procRoot);
+    if (!table)
+        return null;
+    return [...table.keys()].filter((pid) => holdsSocket(pid, inodes, procRoot));
 }
