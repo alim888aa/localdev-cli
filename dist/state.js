@@ -43,25 +43,36 @@ async function canBind(port) {
 }
 async function acquireLock() {
     await fs.mkdir(stateRoot, { recursive: true, mode: 0o700 });
+    const token = randomUUID();
+    const ownerFile = path.join(lockPath, "owner.json");
     for (let attempt = 0; attempt < 600; attempt++) {
+        // Build the lock with its owner file, then rename it into place: the lock never exists without an owner.
+        const staging = `${lockPath}.${process.pid}.${token}`;
+        await fs.mkdir(staging, { mode: 0o700 });
+        await fs.writeFile(path.join(staging, "owner.json"), JSON.stringify({ pid: process.pid, time: Date.now(), token }));
         try {
-            await fs.mkdir(lockPath, { mode: 0o700 });
-            await fs.writeFile(path.join(lockPath, "owner.json"), JSON.stringify({ pid: process.pid, time: Date.now() }));
-            return () => fs.rm(lockPath, { recursive: true, force: true });
+            await fs.rename(staging, lockPath);
+            return async () => {
+                // Release only our own lock, never one another process reclaimed after ours went stale.
+                const owner = await fs.readFile(ownerFile, "utf8").then((text) => JSON.parse(text), () => null);
+                if (owner?.token === token)
+                    await fs.rm(lockPath, { recursive: true, force: true });
+            };
         }
         catch (error) {
-            if (error.code !== "EEXIST")
+            await fs.rm(staging, { recursive: true, force: true });
+            const code = error.code;
+            if (code !== "EEXIST" && code !== "ENOTEMPTY" && code !== "EISDIR" && code !== "EPERM")
                 throw error;
             try {
-                const owner = JSON.parse(await fs.readFile(path.join(lockPath, "owner.json"), "utf8"));
+                const owner = JSON.parse(await fs.readFile(ownerFile, "utf8"));
                 if (Date.now() - owner.time > 30_000 && !pidExists(owner.pid)) {
                     await fs.rm(lockPath, { recursive: true, force: true });
                     continue;
                 }
             }
             catch {
-                // The owner file is written right after the directory. One still missing after
-                // 30 seconds means its writer died in between, so the lock is abandoned.
+                // Only a localdev older than atomic locks can leave a lock without an owner file.
                 const created = await fs.stat(lockPath).then((stat) => stat.mtimeMs, () => undefined);
                 if (created !== undefined && Date.now() - created > 30_000) {
                     await fs.rm(lockPath, { recursive: true, force: true });

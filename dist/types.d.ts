@@ -56,8 +56,10 @@ export interface OwnedProcess {
     /** Descendant process groups started with their own group (e.g. detached emulators). */
     escapedGroups?: Array<{
         pgid: number;
-        pid: number;
-        birth: string;
+        members: Array<{
+            pid: number;
+            birth: string;
+        }>;
     }>;
 }
 export interface SessionReceipt {

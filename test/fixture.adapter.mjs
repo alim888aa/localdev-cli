@@ -25,7 +25,7 @@ export default {
       command: process.execPath,
       args: fixture === "neverready"
         ? [path.join(projectRoot, "test", "slow-seed.mjs"), dataDir]
-        : [path.join(projectRoot, "test", fixture === "launcher" ? "launcher.mjs" : fixture === "detached" ? "detached-launcher.mjs" : "server.mjs"), String(ports.app), dataDir],
+        : [path.join(projectRoot, "test", fixture === "launcher" ? "launcher.mjs" : fixture === "detached" ? "detached-launcher.mjs" : fixture === "escaped-anchor" ? "escaped-anchor.mjs" : fixture === "late-escape" ? "late-escape.mjs" : "server.mjs"), String(ports.app), dataDir],
       env: { LOCALDEV_TEST_SECRET: "private-test-value" },
       readyPort: "app",
       readyTimeoutMs: 5000,

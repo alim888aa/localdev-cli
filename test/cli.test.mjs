@@ -432,6 +432,77 @@ test("stop kills a server that moved into its own process group while its launch
   }
 });
 
+test("stop kills an escaped server group after the process that created the group exits", async () => {
+  const state = await mkdtemp(path.join(os.tmpdir(), "local-cli-anchor-"));
+  const env = { ...process.env, LOCAL_CLI_STATE_DIR: state };
+  const run = async (...args) => {
+    const { stdout } = await exec(process.execPath, [cli, ...args], { env, cwd: root });
+    return JSON.parse(stdout);
+  };
+  let receipt;
+  try {
+    receipt = await run("startup", "escaped-anchor", "--project", root, "--adapter", adapter);
+    assert.equal((await fetch(receipt.urls.app)).status, 200);
+    await new Promise((resolve) => setTimeout(resolve, 2000)); // the anchor has exited; its server lives on
+    assert.equal((await fetch(receipt.urls.app)).status, 200);
+    await run("stop", receipt.id);
+    await assert.rejects(fetch(receipt.urls.app), "the server in the anchorless group is stopped too");
+  } finally {
+    if (receipt) await run("stop", receipt.id).catch(() => undefined);
+    await rm(state, { recursive: true, force: true });
+  }
+});
+
+test("stop kills a non-listening helper that escaped the session group after readiness", async () => {
+  const state = await mkdtemp(path.join(os.tmpdir(), "local-cli-late-escape-"));
+  const env = { ...process.env, LOCAL_CLI_STATE_DIR: state };
+  const run = async (...args) => {
+    const { stdout } = await exec(process.execPath, [cli, ...args], { env, cwd: root });
+    return JSON.parse(stdout);
+  };
+  let receipt;
+  try {
+    receipt = await run("startup", "late-escape", "--project", root, "--adapter", adapter);
+    const helper = Number(await waitUntil(() => readFile(path.join(receipt.dataDir, "helper.pid"), "utf8").catch(() => null)));
+    const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+    assert.ok(alive(helper));
+    await run("stop", receipt.id);
+    assert.ok(!alive(helper), "the late escaped helper is stopped");
+  } finally {
+    if (receipt) await run("stop", receipt.id).catch(() => undefined);
+    await rm(state, { recursive: true, force: true });
+  }
+});
+
+test("a lock held by a live owner is never taken, and is reclaimed once that owner is gone", async () => {
+  const state = await mkdtemp(path.join(os.tmpdir(), "local-cli-live-lock-"));
+  const env = { ...process.env, LOCAL_CLI_STATE_DIR: state };
+  const owner = spawn(process.execPath, ["-e", "setInterval(() => {}, 60000)"], { stdio: "ignore" });
+  let startup;
+  try {
+    const lock = path.join(state, "allocation.lock");
+    await mkdir(lock);
+    // An old timestamp: only the owner's liveness protects this lock.
+    await writeFile(path.join(lock, "owner.json"), JSON.stringify({ pid: owner.pid, time: Date.now() - 60_000, token: "other" }));
+    let output = "";
+    startup = spawn(process.execPath, [cli, "startup", "--project", root, "--adapter", adapter], { env, cwd: root });
+    startup.stdout.on("data", (chunk) => { output += chunk; });
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    assert.equal(startup.exitCode, null, "startup waits while the lock owner is alive");
+    assert.equal(JSON.parse(await readFile(path.join(lock, "owner.json"), "utf8")).token, "other");
+    owner.kill();
+    const code = await new Promise((resolve) => startup.once("exit", resolve));
+    assert.equal(code, 0);
+    const receipt = JSON.parse(output);
+    assert.equal(receipt.state, "ready");
+    await exec(process.execPath, [cli, "stop", receipt.id], { env, cwd: root });
+  } finally {
+    owner.kill();
+    startup?.kill();
+    await rm(state, { recursive: true, force: true });
+  }
+});
+
 test("a lock abandoned before its owner file was written does not block startup", async () => {
   const state = await mkdtemp(path.join(os.tmpdir(), "local-cli-stale-lock-"));
   const env = { ...process.env, LOCAL_CLI_STATE_DIR: state };

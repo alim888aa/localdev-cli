@@ -55,24 +55,31 @@ function descendsFromGroup(pid, pgid) {
     }
     return false;
 }
-/** Descendants of the owned group that moved into their own process group, which a group signal misses. */
-function findEscapedGroups(pgid) {
+function processTable() {
+    const table = new Map();
     let output;
     try {
         output = execFileSync("ps", ["-A", "-o", "pid=,ppid=,pgid="], { encoding: "utf8" });
     }
     catch {
-        return [];
+        return table;
     }
-    const table = new Map();
     for (const line of output.trim().split("\n")) {
         const [pid, parent, group] = line.trim().split(/\s+/).map(Number);
         if (Number.isSafeInteger(pid))
             table.set(pid, { parent, group });
     }
-    const escaped = new Map();
-    for (const [pid, info] of table) {
-        if (info.group === pgid || escaped.has(info.group))
+    return table;
+}
+/**
+ * Descendants of the owned group that moved into their own process group, which a group signal misses.
+ * Every current member is recorded, so the group stays verifiable after the process that created it exits.
+ */
+function findEscapedGroups(pgid) {
+    const table = processTable();
+    const groups = new Set();
+    for (const [, info] of table) {
+        if (info.group === pgid || groups.has(info.group))
             continue;
         const seen = new Set();
         let current = info.parent;
@@ -82,23 +89,32 @@ function findEscapedGroups(pgid) {
             if (!ancestor)
                 break;
             if (ancestor.group === pgid) {
-                const birth = birthOf(pid);
-                if (birth)
-                    escaped.set(info.group, { pgid: info.group, pid, birth });
+                groups.add(info.group);
                 break;
             }
             current = ancestor.parent;
         }
     }
-    return [...escaped.values()];
+    return [...groups].map((group) => ({
+        pgid: group,
+        members: [...table].filter(([, info]) => info.group === group)
+            .map(([pid]) => ({ pid, birth: birthOf(pid) }))
+            .filter((member) => member.birth !== null),
+    })).filter((group) => group.members.length);
 }
 function mergeGroups(...lists) {
     const merged = new Map();
-    for (const list of lists)
-        for (const group of list ?? [])
-            if (!merged.has(group.pgid))
-                merged.set(group.pgid, group);
-    return [...merged.values()];
+    for (const list of lists) {
+        for (const stored of list ?? []) {
+            const members = "members" in stored ? stored.members : [{ pid: stored.pid, birth: stored.birth }];
+            const known = merged.get(stored.pgid) ?? new Map();
+            for (const member of members)
+                if (!known.has(member.pid))
+                    known.set(member.pid, member);
+            merged.set(stored.pgid, known);
+        }
+    }
+    return [...merged].map(([pgid, members]) => ({ pgid, members: [...members.values()] }));
 }
 /** Check the listener PID, so another app cannot make an owned session look healthy. */
 function ownedListener(record) {
@@ -254,34 +270,46 @@ export async function stopService(record) {
     const mainAlive = groupExists(record.pid);
     if (mainAlive && !isOwned(record) && !guardOwnsGroup(record))
         return false;
-    // An escaped group is only signalled while its recorded member is the same process (no PID reuse).
-    const escaped = mergeGroups(record.escapedGroups, mainAlive ? findEscapedGroups(record.pid) : [])
-        .filter((group) => birthOf(group.pid) === group.birth && groupExists(group.pgid));
-    if (!mainAlive && !escaped.length)
-        return true;
-    const targets = [...(mainAlive ? [record.pid] : []), ...escaped.map((group) => group.pgid)];
+    const known = mergeGroups(record.escapedGroups, mainAlive ? findEscapedGroups(record.pid) : [])
+        .filter((group) => groupExists(group.pgid));
+    // An escaped group is signalled only while a recorded member is still the same process (no PID reuse).
+    // A live group with no verifiable member fails closed so the receipt is kept for inspection.
+    const verified = known.filter((group) => group.members.some((member) => birthOf(member.pid) === member.birth));
+    const unverified = known.length - verified.length;
+    if (!mainAlive && !verified.length)
+        return unverified === 0;
+    const targets = [...(mainAlive ? [record.pid] : []), ...verified.map((group) => group.pgid)];
+    // Re-check identity before each signal: a group ID can be reused once all of its members exit.
+    const stillOwned = (pgid) => pgid === record.pid
+        ? isOwned(record) || guardOwnsGroup(record)
+        : verified.find((group) => group.pgid === pgid).members.some((member) => birthOf(member.pid) === member.birth);
     for (const pgid of targets) {
-        try {
-            process.kill(-pgid, "SIGTERM");
+        if (stillOwned(pgid)) {
+            try {
+                process.kill(-pgid, "SIGTERM");
+            }
+            catch { /* Already exited. */ }
         }
-        catch { /* Already exited. */ }
     }
     const remaining = () => targets.filter(groupExists);
     const deadline = Date.now() + 4_000;
     while (Date.now() < deadline && remaining().length) {
         await new Promise((resolve) => setTimeout(resolve, 100));
     }
+    // A remaining group whose identity can no longer be verified is not force-killed; it fails closed below.
     for (const pgid of remaining()) {
-        try {
-            process.kill(-pgid, "SIGKILL");
+        if (stillOwned(pgid)) {
+            try {
+                process.kill(-pgid, "SIGKILL");
+            }
+            catch { /* Already exited. */ }
         }
-        catch { /* Already exited. */ }
     }
     const killDeadline = Date.now() + 2_000;
     while (Date.now() < killDeadline && remaining().length) {
         await new Promise((resolve) => setTimeout(resolve, 100));
     }
-    return remaining().length === 0;
+    return remaining().length === 0 && unverified === 0;
 }
 export function processAlive(record) {
     return isOwned(record) || guardOwnsGroup(record);

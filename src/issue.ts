@@ -156,8 +156,26 @@ function render(kind: Kind, fields: Fields, context: {
   return { title, body: `${body.join("\n\n")}\n`, label: kind === "bug" ? "bug" : "enhancement" };
 }
 
-/** Thrown when nothing was created, so the caller can print the draft for someone else to file. */
+/** Thrown only when GitHub definitely created nothing, so the caller can print the draft for someone else. */
 class NotPublishedError extends Error {}
+
+function ghFailure(error: unknown): { definite: boolean; message: string } {
+  const failure = error as { code?: unknown; status?: unknown; stderr?: unknown };
+  const stderr = String(failure.stderr ?? "").trim();
+  const message = stderr || (error instanceof Error ? error.message : String(error));
+  // gh missing, gh not logged in (exit 4), or an HTTP 4xx rejection: the request created nothing.
+  const definite = failure.code === "ENOENT" || failure.status === 4 || /\bHTTP 4\d\d\b/.test(stderr);
+  return { definite, message };
+}
+
+/** After an ambiguous POST, look for an issue with this exact title and body created in the last 15 minutes. */
+function findCreated(title: string, body: string): { number: number; html_url: string } | null {
+  const since = new Date(Date.now() - 15 * 60_000).toISOString();
+  const recent = JSON.parse(execFileSync("gh", ["api", `repos/${REPO}/issues?state=all&sort=created&direction=desc&per_page=30&since=${since}`], {
+    encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
+  })) as Array<{ number: number; html_url: string; title: string; body: string | null; pull_request?: unknown }>;
+  return recent.find((item) => !item.pull_request && item.title === title && (item.body ?? "").trim() === body.trim()) ?? null;
+}
 
 // REST rather than `gh issue create`: cloud sandboxes block GitHub GraphQL but allow REST.
 async function publish(title: string, body: string, label: string): Promise<string> {
@@ -165,16 +183,21 @@ async function publish(title: string, body: string, label: string): Promise<stri
   const bodyFile = path.join(temporary, "body.md");
   try {
     await fs.writeFile(bodyFile, body, { mode: 0o600 });
-    let created: { number: number; html_url: string };
+    let created: { number: number; html_url: string } | null;
     try {
       created = JSON.parse(execFileSync("gh", [
         "api", `repos/${REPO}/issues`, "-X", "POST",
         "-f", `title=${title}`, "-F", `body=@${bodyFile}`, "-f", `labels[]=${label}`,
       ], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }));
     } catch (error) {
-      const stderr = String((error as { stderr?: unknown }).stderr ?? "").trim();
-      throw new NotPublishedError(stderr || (error instanceof Error ? error.message : String(error)));
+      const failure = ghFailure(error);
+      if (failure.definite) throw new NotPublishedError(failure.message);
+      // The request may have reached GitHub before the response was lost.
+      try { created = findCreated(title, body); }
+      catch { created = null; }
+      if (!created) throw new Error(`Publishing outcome unknown (${failure.message}). Check ${REPO} for an issue titled "${title}" before retrying.`);
     }
+    if (!created) throw new Error(`Publishing outcome unknown. Check ${REPO} for an issue titled "${title}" before retrying.`);
     const url = created.html_url;
     let saved: { title: string; html_url: string; labels: Array<{ name: string }>; state: string };
     try {
@@ -200,7 +223,7 @@ async function publishOrPrintDraft(report: { title: string; body: string; label:
   } catch (error) {
     if (!(error instanceof NotPublishedError)) throw error;
     console.log(`# ${report.title}\n\n${report.body}\nLabel: ${report.label}\n`);
-    throw new Error(`Could not publish to ${REPO}; nothing was created. The draft is printed above for someone with access to file. gh said: ${error.message}`);
+    throw new Error(`GitHub rejected the issue, so nothing was created in ${REPO}. The draft is printed above for someone with access to file. gh said: ${error.message}`);
   }
 }
 
