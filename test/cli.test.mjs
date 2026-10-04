@@ -418,6 +418,205 @@ test("stop clears a session whose service has already died", async () => {
   }
 });
 
+test("status for a stopped or unknown session reports it as gone", async () => {
+  const state = await mkdtemp(path.join(os.tmpdir(), "local-cli-status-gone-"));
+  const env = { ...process.env, LOCAL_CLI_STATE_DIR: state };
+  const run = async (...args) => {
+    const { stdout } = await exec(process.execPath, [cli, ...args], { env, cwd: root });
+    return JSON.parse(stdout);
+  };
+  let receipt;
+  try {
+    receipt = await run("startup", "--project", root, "--adapter", adapter);
+    await run("stop", receipt.id);
+    assert.deepEqual(await run("status", receipt.id), [{ id: receipt.id, state: "gone" }]);
+    const unknown = "00000000-0000-4000-8000-000000000000";
+    assert.deepEqual(await run("status", unknown), [{ id: unknown, state: "gone" }]);
+  } finally {
+    if (receipt) await run("stop", receipt.id).catch(() => undefined);
+    await rm(state, { recursive: true, force: true });
+  }
+});
+
+// A paused server accepts the connection but never answers, so only a short client timeout ends the request.
+async function answers(url) {
+  try { return (await fetch(url, { signal: AbortSignal.timeout(1000) })).status === 200; }
+  catch (error) {
+    if (error.name === "TimeoutError") return false;
+    throw error;
+  }
+}
+
+function processState(pid) {
+  return execFileSync("ps", ["-o", "stat=", "-p", String(pid)], { encoding: "utf8" }).trim();
+}
+
+test("fault pause freezes one session's service until cleared and leaves another session running", async () => {
+  const state = await mkdtemp(path.join(os.tmpdir(), "local-cli-fault-"));
+  const env = { ...process.env, LOCAL_CLI_STATE_DIR: state };
+  const run = async (...args) => {
+    const { stdout } = await exec(process.execPath, [cli, ...args], { env, cwd: root });
+    return JSON.parse(stdout);
+  };
+  let first;
+  let second;
+  try {
+    first = await run("startup", "--project", root, "--adapter", adapter);
+    second = await run("startup", "catalog", "--project", root, "--adapter", adapter);
+    assert.deepEqual((await run("status", first.id))[0].faults, []);
+    await assert.rejects(run("fault", first.id, "--clear"), /No active faults/);
+    await assert.rejects(run("fault", first.id, "app", "--clear"), /No active fault on app/);
+
+    const { fault } = await run("fault", first.id, "app", "--mode", "pause");
+    assert.equal(fault.port, "app");
+    assert.equal(fault.mode, "pause");
+    assert.ok(fault.pids.length >= 1);
+    for (const { pid } of fault.pids) assert.ok(processState(pid).startsWith("T"), "the listener is stopped");
+    assert.ok(!fault.pids.some(({ pid }) => pid === first.processes[0].pid), "the supervisor is not paused");
+    assert.equal(await answers(first.urls.app), false, "requests to the paused service time out");
+    assert.equal(await answers(second.urls.app), true, "another session is unaffected");
+
+    const [paused] = await run("status", first.id);
+    assert.equal(paused.state, "ready");
+    assert.equal(paused.faults.length, 1);
+    assert.equal(paused.faults[0].port, "app");
+    assert.deepEqual((await run("status", second.id))[0].faults, []);
+
+    await assert.rejects(run("fault", first.id, "app", "--mode", "pause"), /already paused/);
+    await assert.rejects(run("fault", first.id, "nope", "--mode", "pause"), /Unknown port nope/);
+    await assert.rejects(run("fault", first.id, "app", "--mode", "reject"), /Unsupported fault mode reject/);
+    await assert.rejects(run("fault", first.id, "app", "--mode", "pause", "--clear"), /Choose either/);
+    await assert.rejects(run("fault", "00000000-0000-4000-8000-000000000000", "app", "--mode", "pause"), /No session/);
+    // The fixture declares a secondary port that nothing listens on in the base fixture.
+    await assert.rejects(run("fault", first.id, "secondary", "--mode", "pause"), /No listener owned/);
+
+    const { cleared } = await run("fault", first.id, "app", "--clear");
+    assert.deepEqual(cleared.map((item) => item.port), ["app"]);
+    assert.deepEqual(cleared[0].resumed, fault.pids.map(({ pid }) => pid));
+    assert.equal(await answers(first.urls.app), true, "the cleared service answers again");
+    assert.deepEqual((await run("status", first.id))[0].faults, []);
+    await assert.rejects(run("fault", first.id, "app", "--clear"), /No active fault on app/);
+
+    await run("fault", first.id, "app", "--mode", "pause");
+    assert.equal((await run("fault", first.id, "--clear")).cleared.length, 1, "clear without a port clears all");
+    assert.equal(await answers(first.urls.app), true);
+  } finally {
+    if (first) await run("stop", first.id).catch(() => undefined);
+    if (second) await run("stop", second.id).catch(() => undefined);
+    await rm(state, { recursive: true, force: true });
+  }
+});
+
+test("stop while a service is paused finishes promptly and leaves no processes", async () => {
+  const state = await mkdtemp(path.join(os.tmpdir(), "local-cli-fault-stop-"));
+  const env = { ...process.env, LOCAL_CLI_STATE_DIR: state };
+  const run = async (...args) => {
+    const { stdout } = await exec(process.execPath, [cli, ...args], { env, cwd: root });
+    return JSON.parse(stdout);
+  };
+  let receipt;
+  try {
+    receipt = await run("startup", "--project", root, "--adapter", adapter);
+    const { fault } = await run("fault", receipt.id, "app", "--mode", "pause");
+    const started = Date.now();
+    await run("stop", receipt.id);
+    // Without resuming first, SIGTERM stays pending on the frozen server until the 4 s SIGKILL fallback.
+    assert.ok(Date.now() - started < 3000, `stop took ${Date.now() - started} ms`);
+    for (const { pid } of fault.pids) assert.equal(running(pid), false);
+    assert.equal(running(receipt.processes[0].pid), false);
+    assert.equal(running(receipt.processes[0].guardPid), false);
+    assert.deepEqual(await run("status"), []);
+  } finally {
+    if (receipt) await run("stop", receipt.id).catch(() => undefined);
+    await rm(state, { recursive: true, force: true });
+  }
+});
+
+test("fault and stop wait for the allocation lock, and a racing pause never outlives stop", async () => {
+  const state = await mkdtemp(path.join(os.tmpdir(), "local-cli-fault-lock-"));
+  const probe = net.createServer();
+  await new Promise((resolve) => probe.listen({ host: "127.0.0.1", port: 0, exclusive: true }, resolve));
+  const lockPort = probe.address().port;
+  await new Promise((resolve) => probe.close(resolve));
+  const env = { ...process.env, LOCAL_CLI_STATE_DIR: state, LOCAL_CLI_LOCK_PORT: String(lockPort) };
+  const run = async (...args) => {
+    const { stdout } = await exec(process.execPath, [cli, ...args], { env, cwd: root });
+    return JSON.parse(stdout);
+  };
+  const spawnCli = (...args) => {
+    const child = spawn(process.execPath, [cli, ...args], { env, cwd: root, stdio: ["ignore", "pipe", "pipe"] });
+    const exited = new Promise((resolve) => child.once("exit", (code) => resolve(code)));
+    return { child, exited };
+  };
+  const holder = net.createServer();
+  let receipt;
+  let pause;
+  let stop;
+  try {
+    receipt = await run("startup", "--project", root, "--adapter", adapter);
+    await new Promise((resolve) => holder.listen({ host: "127.0.0.1", port: lockPort, exclusive: true }, resolve));
+    pause = spawnCli("fault", receipt.id, "app", "--mode", "pause");
+    stop = spawnCli("stop", receipt.id);
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    assert.equal(pause.child.exitCode, null, "fault waits for the lock");
+    assert.equal(stop.child.exitCode, null, "stop waits for the lock");
+    const held = (await run("status", receipt.id))[0];
+    assert.equal(held.state, "ready", "nothing was written while the lock was held");
+    assert.deepEqual(held.faults, []);
+    await new Promise((resolve) => holder.close(resolve));
+    const released = Date.now();
+    const [pauseCode, stopCode] = await Promise.all([pause.exited, stop.exited]);
+    assert.equal(stopCode, 0);
+    // Either order is valid: a pause that ran first is resumed by stop; one that ran second finds the session stopping.
+    assert.ok(pauseCode === 0 || pauseCode === 1, `fault exited ${pauseCode}`);
+    assert.ok(Date.now() - released < 3000, `stop took ${Date.now() - released} ms after the lock was released`);
+    assert.deepEqual(await run("status"), []);
+    const leftovers = execFileSync("ps", ["-eo", "stat=,args="], { encoding: "utf8" })
+      .split("\n").filter((line) => line.includes(state) && !line.trim().startsWith("Z"));
+    assert.deepEqual(leftovers, [], "no session process is left running or stopped");
+  } finally {
+    holder.close();
+    pause?.child.kill();
+    stop?.child.kill();
+    if (receipt) await run("stop", receipt.id).catch(() => undefined);
+    await rm(state, { recursive: true, force: true });
+  }
+});
+
+test("fault refuses to pause an unrelated listener on the session port", async () => {
+  const state = await mkdtemp(path.join(os.tmpdir(), "local-cli-fault-intruder-"));
+  const env = { ...process.env, LOCAL_CLI_STATE_DIR: state };
+  const run = async (...args) => {
+    const { stdout } = await exec(process.execPath, [cli, ...args], { env, cwd: root });
+    return JSON.parse(stdout);
+  };
+  let receipt;
+  let intruder;
+  try {
+    receipt = await run("startup", "messages", "--project", root, "--adapter", adapter);
+    const service = receipt.processes[0];
+    const serverPid = execFileSync("pgrep", ["-P", String(service.pid)], { encoding: "utf8" })
+      .trim().split(/\s+/).map(Number).find((pid) => pid !== service.guardPid);
+    assert.ok(serverPid);
+    process.kill(serverPid, "SIGKILL");
+    await waitUntil(async () => (await run("status", receipt.id))[0].state === "degraded");
+    intruder = spawn(process.execPath, [path.join(root, "test", "server.mjs"), String(receipt.ports.app), "intruder"], {
+      cwd: root, stdio: "ignore",
+    });
+    await waitUntil(async () => {
+      try { return (await (await fetch(receipt.urls.app)).text()) === "intruder"; }
+      catch { return false; }
+    });
+    await assert.rejects(run("fault", receipt.id, "app", "--mode", "pause"), /No listener owned/);
+    assert.ok(!processState(intruder.pid).startsWith("T"), "the unrelated server was not paused");
+    assert.equal(await answers(receipt.urls.app), true);
+  } finally {
+    if (intruder) intruder.kill("SIGKILL");
+    if (receipt) await run("stop", receipt.id).catch(() => undefined);
+    await rm(state, { recursive: true, force: true });
+  }
+});
+
 test("stop kills a server whose launcher exited", async () => {
   const state = await mkdtemp(path.join(os.tmpdir(), "local-cli-launcher-"));
   const env = { ...process.env, LOCAL_CLI_STATE_DIR: state };

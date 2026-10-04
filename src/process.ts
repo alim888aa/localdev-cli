@@ -4,8 +4,8 @@ import { randomUUID } from "node:crypto";
 import net from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { linuxListenerOwned } from "./linux-listener.js";
-import type { CommandSpec, OwnedProcess, ServiceSpec } from "./types.js";
+import { linuxListenerOwned, linuxListenerPids } from "./linux-listener.js";
+import type { CommandSpec, OwnedProcess, ProcessIdentity, ServiceSpec } from "./types.js";
 
 const supervisorPath = fileURLToPath(new URL("./supervisor.js", import.meta.url));
 
@@ -62,7 +62,7 @@ function descendsFromGroup(pid: number, pgid: number): boolean {
   return false;
 }
 
-type Member = { pid: number; birth: string };
+type Member = ProcessIdentity;
 type EscapedGroup = { pgid: number; members: Member[] };
 type StoredEscapedGroup = EscapedGroup | { pgid: number; pid: number; birth: string };
 
@@ -131,6 +131,57 @@ function ownedListener(record: OwnedProcess): boolean {
       .map((line) => Number(line.slice(1)));
     return pids.some((pid) => descendsFromGroup(pid, record.pid));
   } catch { return false; }
+}
+
+/** PIDs listening on a TCP port, whoever owns them. Ownership is checked by the caller. */
+export function listenerPids(port: number): number[] {
+  if (process.platform === "linux") {
+    const pids = linuxListenerPids(port);
+    if (pids?.length) return pids;
+  }
+  try {
+    const output = execFileSync("lsof", ["-nP", `-iTCP:${port}`, "-sTCP:LISTEN", "-Fp"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+    return [...new Set(output.split("\n").filter((line) => /^p\d+$/.test(line)).map((line) => Number(line.slice(1))))];
+  } catch { return []; } // lsof exits 1 when nothing listens.
+}
+
+/**
+ * Listeners on a port that belong to this session process: inside its verified group, or inside a recorded
+ * escaped group that still has a verified member (its creator may have exited, so ancestry alone misses it).
+ * A listener from another session or an unrelated app is never returned, so it can never be signalled.
+ */
+export function ownedListenerProcesses(record: OwnedProcess, port: number): ProcessIdentity[] {
+  const groups = mergeGroups(record.escapedGroups)
+    .filter((group) => group.members.some((member) => memberStillIn(member, group.pgid)))
+    .map((group) => group.pgid);
+  if (processAlive(record)) groups.unshift(record.pid);
+  if (!groups.length) return [];
+  const owned: ProcessIdentity[] = [];
+  for (const pid of listenerPids(port)) {
+    // Birth first, then ancestry, then the same birth again: a PID that exits and is reused while ancestry is
+    // checked would otherwise be recorded with the newcomer's birth and later pass signalProcess.
+    const birth = birthOf(pid);
+    if (birth === null || !groups.some((pgid) => descendsFromGroup(pid, pgid))) continue;
+    if (birthOf(pid) === birth) owned.push({ pid, birth });
+  }
+  return owned;
+}
+
+/**
+ * Signal one recorded process only while it is still the same process (start time), never a reused PID.
+ * "gone" means confirmed exited or reused; "failed" means it may still be the recorded process but was not signalled.
+ */
+export function signalProcess(member: ProcessIdentity, signal: NodeJS.Signals): "signalled" | "gone" | "failed" {
+  const birth = birthOf(member.pid);
+  if (birth === null) return processExists(member.pid) ? "failed" : "gone";
+  if (birth !== member.birth) return "gone";
+  try { process.kill(member.pid, signal); return "signalled"; }
+  catch (error) { return (error as NodeJS.ErrnoException).code === "ESRCH" ? "gone" : "failed"; }
+}
+
+function processExists(pid: number): boolean {
+  try { process.kill(pid, 0); return true; }
+  catch (error) { return (error as NodeJS.ErrnoException).code !== "ESRCH"; }
 }
 
 function portOpen(host: string, port: number): Promise<boolean> {
@@ -279,7 +330,12 @@ export async function stopService(record: OwnedProcess): Promise<boolean> {
   const stillOwned = (pgid: number) => pgid === record.pid
     ? isOwned(record) || guardOwnsGroup(record)
     : verified.find((group) => group.pgid === pgid)!.members.some((member) => memberStillIn(member, pgid));
-  for (const pgid of targets) { if (stillOwned(pgid)) { try { process.kill(-pgid, "SIGTERM"); } catch { /* Already exited. */ } } }
+  // SIGCONT after SIGTERM: a member paused by `localdev fault` (or by hand) only acts on SIGTERM once continued.
+  for (const pgid of targets) {
+    if (!stillOwned(pgid)) continue;
+    try { process.kill(-pgid, "SIGTERM"); } catch { continue; /* Already exited. */ }
+    if (stillOwned(pgid)) { try { process.kill(-pgid, "SIGCONT"); } catch { /* Already exited. */ } }
+  }
   const remaining = () => targets.filter(groupExists);
   const deadline = Date.now() + 4_000;
   while (Date.now() < deadline && remaining().length) {

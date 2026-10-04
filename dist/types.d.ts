@@ -37,6 +37,21 @@ export interface SessionPlan {
     urls?: Record<string, string>;
     credentialsFile?: string;
 }
+/** A PID plus its start time, so a later signal can prove it is still the same process. */
+export interface ProcessIdentity {
+    pid: number;
+    birth: string;
+}
+/** An active `localdev fault`: the session's own listener processes on one adapter port, frozen with SIGSTOP. */
+export interface FaultRecord {
+    /** Adapter port name, as in the receipt's ports. */
+    port: string;
+    mode: "pause";
+    pids: ProcessIdentity[];
+    /** Other session ports served by the same process; they are frozen too. */
+    sharedPorts: string[];
+    since: string;
+}
 export interface OwnedProcess {
     name: string;
     launchMode?: string;
@@ -56,10 +71,7 @@ export interface OwnedProcess {
     /** Descendant process groups started with their own group (e.g. detached emulators). */
     escapedGroups?: Array<{
         pgid: number;
-        members: Array<{
-            pid: number;
-            birth: string;
-        }>;
+        members: ProcessIdentity[];
     }>;
 }
 export interface SessionReceipt {
@@ -75,6 +87,8 @@ export interface SessionReceipt {
     credentialsFile?: string;
     cleanupPaths?: string[];
     processes: OwnedProcess[];
+    /** Recorded before any process is paused, so stop and --clear can always resume it. */
+    faults?: FaultRecord[];
     state: "starting" | "ready" | "failed" | "stopping";
     ownerPid: number;
     ownerBirth?: string;

@@ -36,6 +36,25 @@ in 20000–59999. Emulator and other named ports keep their independent allocati
 See [the adapter guide](docs/adapter.md) when adding another project. For local
 CLI development, run `pnpm install`, `pnpm build`, and `pnpm test` here.
 
+## Fail a service on purpose
+
+Verifiers can make one service of a session hang, then restore it:
+
+```sh
+localdev fault <session-id> dataconnect --mode pause   # freeze that service
+localdev fault <session-id> dataconnect --clear        # resume it
+localdev fault <session-id> --clear                    # resume every paused service
+```
+
+The port name comes from the session's `ports`. `pause` sends SIGSTOP to the
+session's own process listening on that port, after checking it belongs to the
+session's process groups. Clients still connect but get no response and time out;
+the service keeps its data and other services keep running. A process that serves
+several ports freezes all of them, listed in the fault's `sharedPorts`. `status`
+lists active faults under `faults`. A paused service still accepts TCP
+connections, so its process keeps `reachable: true`; read `faults` to see what is
+frozen. `stop` resumes paused services before stopping them. Only `pause` exists today; refusing or slowing requests does not.
+
 ## File an issue
 
 From any project checkout, run `localdev issue bug` or

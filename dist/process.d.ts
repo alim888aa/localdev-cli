@@ -1,6 +1,19 @@
 import { type ChildProcess } from "node:child_process";
-import type { CommandSpec, OwnedProcess, ServiceSpec } from "./types.js";
+import type { CommandSpec, OwnedProcess, ProcessIdentity, ServiceSpec } from "./types.js";
 export declare function birthOf(pid: number): string | null;
+/** PIDs listening on a TCP port, whoever owns them. Ownership is checked by the caller. */
+export declare function listenerPids(port: number): number[];
+/**
+ * Listeners on a port that belong to this session process: inside its verified group, or inside a recorded
+ * escaped group that still has a verified member (its creator may have exited, so ancestry alone misses it).
+ * A listener from another session or an unrelated app is never returned, so it can never be signalled.
+ */
+export declare function ownedListenerProcesses(record: OwnedProcess, port: number): ProcessIdentity[];
+/**
+ * Signal one recorded process only while it is still the same process (start time), never a reused PID.
+ * "gone" means confirmed exited or reused; "failed" means it may still be the recorded process but was not signalled.
+ */
+export declare function signalProcess(member: ProcessIdentity, signal: NodeJS.Signals): "signalled" | "gone" | "failed";
 export declare function spawnService(spec: ServiceSpec, root: string, dir: string): Promise<{
     owned: OwnedProcess;
     child: ChildProcess;
