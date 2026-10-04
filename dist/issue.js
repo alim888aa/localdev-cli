@@ -159,30 +159,87 @@ function render(kind, fields, context) {
     ];
     return { title, body: `${body.join("\n\n")}\n`, label: kind === "bug" ? "bug" : "enhancement" };
 }
+/** Thrown only when GitHub definitely created nothing, so the caller can print the draft for someone else. */
+class NotPublishedError extends Error {
+}
+function ghFailure(error) {
+    const failure = error;
+    const stderr = String(failure.stderr ?? "").trim();
+    const message = stderr || (error instanceof Error ? error.message : String(error));
+    // gh missing, gh not logged in (exit 4), or an HTTP 4xx rejection: the request created nothing.
+    const definite = failure.code === "ENOENT" || failure.status === 4 || /\bHTTP 4\d\d\b/.test(stderr);
+    return { definite, message };
+}
+/**
+ * After an ambiguous POST, look for an issue with this exact title and body that was CREATED after the POST
+ * began (with a minute of clock skew). GitHub's `since` filters by update time, so creation is checked here.
+ */
+function findCreated(title, body, postStartedAt) {
+    const recent = JSON.parse(execFileSync("gh", ["api", `repos/${REPO}/issues?state=all&sort=created&direction=desc&per_page=30`], {
+        encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
+    }));
+    return recent.find((item) => !item.pull_request && item.title === title && (item.body ?? "").trim() === body.trim()
+        && Date.parse(item.created_at) >= postStartedAt - 60_000) ?? null;
+}
+// REST rather than `gh issue create`: cloud sandboxes block GitHub GraphQL but allow REST.
 async function publish(title, body, label) {
     const temporary = await fs.mkdtemp(path.join(os.tmpdir(), "localdev-issue-"));
     const bodyFile = path.join(temporary, "body.md");
     try {
         await fs.writeFile(bodyFile, body, { mode: 0o600 });
-        const url = execFileSync("gh", ["issue", "create", "-R", REPO, "--title", title, "--body-file", bodyFile, "--label", label], {
-            encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
-        }).trim();
+        let created;
+        const postStartedAt = Date.now();
+        try {
+            created = JSON.parse(execFileSync("gh", [
+                "api", `repos/${REPO}/issues`, "-X", "POST",
+                "-f", `title=${title}`, "-F", `body=@${bodyFile}`, "-f", `labels[]=${label}`,
+            ], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }));
+        }
+        catch (error) {
+            const failure = ghFailure(error);
+            if (failure.definite)
+                throw new NotPublishedError(failure.message);
+            // The request may have reached GitHub before the response was lost.
+            try {
+                created = findCreated(title, body, postStartedAt);
+            }
+            catch {
+                created = null;
+            }
+            if (!created)
+                throw new Error(`Publishing outcome unknown (${failure.message}). Check ${REPO} for an issue titled "${title}" before retrying.`);
+        }
+        if (!created)
+            throw new Error(`Publishing outcome unknown. Check ${REPO} for an issue titled "${title}" before retrying.`);
+        const url = created.html_url;
         let saved;
         try {
-            saved = JSON.parse(execFileSync("gh", ["issue", "view", url, "-R", REPO, "--json", "title,url,labels,state"], {
+            saved = JSON.parse(execFileSync("gh", ["api", `repos/${REPO}/issues/${created.number}`], {
                 encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
             }));
         }
         catch {
             throw new Error(`Issue was created at ${url}, but readback failed; inspect it before retrying`);
         }
-        if (saved.title !== title || saved.url !== url || !saved.labels.some((item) => item.name === label)) {
+        if (saved.title !== title || saved.html_url !== url || !saved.labels.some((item) => item.name === label)) {
             throw new Error(`Issue was created at ${url}, but its title or label did not match; inspect it before retrying`);
         }
         return url;
     }
     finally {
         await fs.rm(temporary, { recursive: true, force: true });
+    }
+}
+async function publishOrPrintDraft(report) {
+    try {
+        const url = await publish(report.title, report.body, report.label);
+        console.log(`Created ${url} [${report.label}]`);
+    }
+    catch (error) {
+        if (!(error instanceof NotPublishedError))
+            throw error;
+        console.log(`# ${report.title}\n\n${report.body}\nLabel: ${report.label}\n`);
+        throw new Error(`GitHub rejected the issue, so nothing was created in ${REPO}. The draft is printed above for someone with access to file. gh said: ${error.message}`);
     }
 }
 export async function issueCommand(args) {
@@ -208,8 +265,7 @@ export async function issueCommand(args) {
     if (options.submit) {
         if (!cliRef)
             throw new Error("Cannot submit without the installed localdev Git commit; pass --cli-ref SHA");
-        const url = await publish(report.title, report.body, report.label);
-        console.log(`Created ${url} [${report.label}]`);
+        await publishOrPrintDraft(report);
         return;
     }
     console.log(`# ${report.title}\n\n${report.body}\nLabel: ${report.label}\n`);
@@ -220,8 +276,7 @@ export async function issueCommand(args) {
             if (answer.trim().toLowerCase() === "y") {
                 if (!cliRef)
                     throw new Error("Cannot submit without the installed localdev Git commit; rerun with --cli-ref SHA");
-                const url = await publish(report.title, report.body, report.label);
-                console.log(`Created ${url} [${report.label}]`);
+                await publishOrPrintDraft(report);
                 return;
             }
         }

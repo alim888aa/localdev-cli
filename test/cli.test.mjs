@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile, execFileSync, spawn } from "node:child_process";
-import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, symlink, utimes, writeFile } from "node:fs/promises";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -12,6 +13,15 @@ const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const cli = path.join(root, "dist", "cli.js");
 const adapter = path.join(root, "test", "fixture.adapter.mjs");
 
+// A zombie has exited even though kill(pid, 0) still succeeds on it; some sandboxes' PID 1 reaps them slowly.
+function running(pid) {
+  try { process.kill(pid, 0); } catch (error) { return error.code !== "ESRCH"; } // EPERM: exists, not ours
+  try {
+    const stat = execFileSync("ps", ["-o", "stat=", "-p", String(pid)], { encoding: "utf8" }).trim();
+    return !stat.startsWith("Z");
+  } catch { return true; } // If ps can't tell, assume it still runs so a "stopped" assertion can't pass by accident.
+}
+
 async function waitUntil(check, timeoutMs = 5000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -21,6 +31,21 @@ async function waitUntil(check, timeoutMs = 5000) {
   }
   throw new Error("Timed out waiting for test condition");
 }
+
+test("the liveness helper counts live and stopped processes as running and exited ones as not", async () => {
+  const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 60000)"], { stdio: "ignore" });
+  try {
+    await new Promise((resolve) => child.once("spawn", resolve));
+    assert.equal(running(child.pid), true);
+    process.kill(child.pid, "SIGSTOP");
+    assert.equal(running(child.pid), true, "a stopped process still runs");
+    process.kill(child.pid, "SIGCONT");
+  } finally {
+    child.kill("SIGKILL");
+  }
+  await new Promise((resolve) => child.once("exit", resolve));
+  await waitUntil(() => !running(child.pid));
+});
 
 test("concurrent sessions have separate ports/data and stop independently", async () => {
   const state = await mkdtemp(path.join(os.tmpdir(), "local-cli-test-"));
@@ -89,13 +114,13 @@ test("duplicate startup requires a choice and replace stops only the selected se
     assert.notEqual(replacement.id, parallel.id);
     assert.equal((await run("status")).length, 2);
     assert.ok(!(await run("status")).some(item => item.id === parallel.id));
-    assert.throws(() => process.kill(parallel.processes[0].pid, 0), { code: "ESRCH" });
+    assert.equal(running(parallel.processes[0].pid), false);
     assert.equal((await fetch(first.urls.app)).status, 200);
     assert.equal((await fetch(replacement.urls.app)).status, 200);
     await run("stop", first.id);
     bareReplacement = await run("startup", "base", "--replace", "--project", root, "--adapter", adapter);
     assert.ok(!(await run("status")).some(item => item.id === replacement.id));
-    assert.throws(() => process.kill(replacement.processes[0].pid, 0), { code: "ESRCH" });
+    assert.equal(running(replacement.processes[0].pid), false);
     assert.equal((await fetch(bareReplacement.urls.app)).status, 200);
   } finally {
     for (const item of [first, parallel, replacement, bareReplacement]) {
@@ -360,8 +385,7 @@ test("a timed-out seed fails startup and is stopped", async () => {
     assert.equal(receipt.processes.find((item) => item.name === "seed").alive, false);
     const seedPid = Number(await readFile(path.join(receipt.dataDir, "seed.pid"), "utf8"));
     await waitUntil(() => {
-      try { process.kill(seedPid, 0); return false; }
-      catch { return true; }
+      return !running(seedPid);
     });
     await run("stop", receipt.id);
   } finally {
@@ -413,6 +437,141 @@ test("stop kills a server whose launcher exited", async () => {
   }
 });
 
+test("stop kills a server that moved into its own process group while its launcher lives", async () => {
+  const state = await mkdtemp(path.join(os.tmpdir(), "local-cli-detached-"));
+  const env = { ...process.env, LOCAL_CLI_STATE_DIR: state };
+  const run = async (...args) => {
+    const { stdout } = await exec(process.execPath, [cli, ...args], { env, cwd: root });
+    return JSON.parse(stdout);
+  };
+  let receipt;
+  try {
+    receipt = await run("startup", "detached", "--project", root, "--adapter", adapter);
+    assert.equal((await fetch(receipt.urls.app)).status, 200);
+    await run("stop", receipt.id);
+    await assert.rejects(fetch(receipt.urls.app), "the detached server is stopped too");
+  } finally {
+    if (receipt) await run("stop", receipt.id).catch(() => undefined);
+    await rm(state, { recursive: true, force: true });
+  }
+});
+
+test("stop kills an escaped server group after the process that created the group exits", async () => {
+  const state = await mkdtemp(path.join(os.tmpdir(), "local-cli-anchor-"));
+  const env = { ...process.env, LOCAL_CLI_STATE_DIR: state };
+  const run = async (...args) => {
+    const { stdout } = await exec(process.execPath, [cli, ...args], { env, cwd: root });
+    return JSON.parse(stdout);
+  };
+  let receipt;
+  try {
+    receipt = await run("startup", "escaped-anchor", "--project", root, "--adapter", adapter);
+    assert.equal((await fetch(receipt.urls.app)).status, 200);
+    await new Promise((resolve) => setTimeout(resolve, 2000)); // the anchor has exited; its server lives on
+    assert.equal((await fetch(receipt.urls.app)).status, 200);
+    await run("stop", receipt.id);
+    await assert.rejects(fetch(receipt.urls.app), "the server in the anchorless group is stopped too");
+  } finally {
+    if (receipt) await run("stop", receipt.id).catch(() => undefined);
+    await rm(state, { recursive: true, force: true });
+  }
+});
+
+test("stop kills a non-listening helper that escaped the session group after readiness", async () => {
+  const state = await mkdtemp(path.join(os.tmpdir(), "local-cli-late-escape-"));
+  const env = { ...process.env, LOCAL_CLI_STATE_DIR: state };
+  const run = async (...args) => {
+    const { stdout } = await exec(process.execPath, [cli, ...args], { env, cwd: root });
+    return JSON.parse(stdout);
+  };
+  let receipt;
+  try {
+    receipt = await run("startup", "late-escape", "--project", root, "--adapter", adapter);
+    const helper = Number(await waitUntil(() => readFile(path.join(receipt.dataDir, "helper.pid"), "utf8").catch(() => null)));
+    const alive = running;
+    assert.ok(alive(helper));
+    await run("stop", receipt.id);
+    assert.ok(!alive(helper), "the late escaped helper is stopped");
+  } finally {
+    if (receipt) await run("stop", receipt.id).catch(() => undefined);
+    await rm(state, { recursive: true, force: true });
+  }
+});
+
+test("a lock held by a live owner is never taken, and is reclaimed once that owner is gone", async () => {
+  const state = await mkdtemp(path.join(os.tmpdir(), "local-cli-live-lock-"));
+  const env = { ...process.env, LOCAL_CLI_STATE_DIR: state };
+  const owner = spawn(process.execPath, ["-e", "setInterval(() => {}, 60000)"], { stdio: "ignore" });
+  let startup;
+  try {
+    const lock = path.join(state, "allocation.lock");
+    await mkdir(lock);
+    // An old timestamp: only the owner's liveness protects this lock.
+    await writeFile(path.join(lock, "owner.json"), JSON.stringify({ pid: owner.pid, time: Date.now() - 60_000, token: "other" }));
+    let output = "";
+    startup = spawn(process.execPath, [cli, "startup", "--project", root, "--adapter", adapter], { env, cwd: root });
+    startup.stdout.on("data", (chunk) => { output += chunk; });
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    assert.equal(startup.exitCode, null, "startup waits while the lock owner is alive");
+    assert.equal(JSON.parse(await readFile(path.join(lock, "owner.json"), "utf8")).token, "other");
+    owner.kill();
+    const code = await new Promise((resolve) => startup.once("exit", resolve));
+    assert.equal(code, 0);
+    const receipt = JSON.parse(output);
+    assert.equal(receipt.state, "ready");
+    await exec(process.execPath, [cli, "stop", receipt.id], { env, cwd: root });
+  } finally {
+    owner.kill();
+    startup?.kill();
+    await rm(state, { recursive: true, force: true });
+  }
+});
+
+test("startup waits while another process holds the allocation port lock, then proceeds", async () => {
+  const state = await mkdtemp(path.join(os.tmpdir(), "local-cli-port-lock-"));
+  const holder = net.createServer();
+  await new Promise((resolve) => holder.listen({ host: "127.0.0.1", port: 0, exclusive: true }, resolve));
+  const env = { ...process.env, LOCAL_CLI_STATE_DIR: state, LOCAL_CLI_LOCK_PORT: String(holder.address().port) };
+  let startup;
+  try {
+    let output = "";
+    startup = spawn(process.execPath, [cli, "startup", "--project", root, "--adapter", adapter], { env, cwd: root });
+    startup.stdout.on("data", (chunk) => { output += chunk; });
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    assert.equal(startup.exitCode, null, "startup waits while the lock port is held");
+    await new Promise((resolve) => holder.close(resolve));
+    assert.equal(await new Promise((resolve) => startup.once("exit", resolve)), 0);
+    const receipt = JSON.parse(output);
+    assert.equal(receipt.state, "ready");
+    await exec(process.execPath, [cli, "stop", receipt.id], { env, cwd: root });
+  } finally {
+    holder.close();
+    startup?.kill();
+    await rm(state, { recursive: true, force: true });
+  }
+});
+
+test("a lock abandoned before its owner file was written does not block startup", async () => {
+  const state = await mkdtemp(path.join(os.tmpdir(), "local-cli-stale-lock-"));
+  const env = { ...process.env, LOCAL_CLI_STATE_DIR: state };
+  const run = async (...args) => {
+    const { stdout } = await exec(process.execPath, [cli, ...args], { env, cwd: root });
+    return JSON.parse(stdout);
+  };
+  let receipt;
+  try {
+    const lock = path.join(state, "allocation.lock");
+    await mkdir(lock);
+    const old = new Date(Date.now() - 60_000);
+    await utimes(lock, old, old);
+    receipt = await run("startup", "--project", root, "--adapter", adapter);
+    assert.equal(receipt.state, "ready");
+  } finally {
+    if (receipt) await run("stop", receipt.id).catch(() => undefined);
+    await rm(state, { recursive: true, force: true });
+  }
+});
+
 test("stop kills an in-flight seed after startup is killed", async () => {
   const state = await mkdtemp(path.join(os.tmpdir(), "local-cli-seed-crash-"));
   const env = { ...process.env, LOCAL_CLI_STATE_DIR: state };
@@ -437,7 +596,7 @@ test("stop kills an in-flight seed after startup is killed", async () => {
     await new Promise((resolve) => startup.once("exit", resolve));
     await run("stop", receipt.id);
     await waitUntil(() => {
-      try { process.kill(seedPid, 0); return false; } catch { return true; }
+      return !running(seedPid);
     });
     assert.deepEqual(await run("status"), []);
   } finally {

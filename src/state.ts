@@ -1,4 +1,4 @@
-import { randomInt, randomUUID } from "node:crypto";
+import { createHash, randomInt, randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import net from "node:net";
 import os from "node:os";
@@ -45,26 +45,79 @@ async function canBind(port: number): Promise<boolean> {
   });
 }
 
-async function acquireLock(): Promise<() => Promise<void>> {
-  await fs.mkdir(stateRoot, { recursive: true, mode: 0o700 });
-  for (let attempt = 0; attempt < 600; attempt++) {
+// The allocation lock is a loopback TCP listener. The kernel lets one process listen on the port and frees it
+// when that process exits, so a lock can never go stale and nothing ever has to reclaim one. The port is
+// derived from the state directory (outside the 20000-59999 service range). LOCAL_CLI_LOCK_PORT overrides it;
+// every process sharing a state directory must then use the same value, or they stop excluding each other.
+export const lockPort = Number(process.env.LOCAL_CLI_LOCK_PORT) ||
+  10_000 + (createHash("sha256").update(stateRoot).digest().readUInt32BE(0) % 10_000);
+
+function listenOnce(port: number): Promise<net.Server | null> {
+  return new Promise((resolve, reject) => {
+    // Nothing talks to the lock port; drop any stray connection so close() never waits on one.
+    const server = net.createServer((socket) => socket.destroy());
+    server.once("error", (error: NodeJS.ErrnoException) => error.code === "EADDRINUSE" ? resolve(null) : reject(error));
+    server.listen({ host: "127.0.0.1", port, exclusive: true }, () => { server.unref(); resolve(server); });
+  });
+}
+
+type LegacyOwner = { pid: number; time: number; token?: string };
+
+/**
+ * Older localdev versions lock by creating `allocation.lock/owner.json`. While holding the port lock (so no
+ * other current localdev competes here) wait out a live legacy holder, clear an abandoned one, and take the
+ * directory ourselves so legacy versions wait for us. A legacy writer paused more than 30 s between creating
+ * the directory and writing its owner file is indistinguishable from a dead one: a known mixed-version limit.
+ */
+async function takeLegacyLock(token: string, deadline: number): Promise<void> {
+  const ownerFile = path.join(lockPath, "owner.json");
+  while (Date.now() < deadline) {
     try {
       await fs.mkdir(lockPath, { mode: 0o700 });
-      await fs.writeFile(path.join(lockPath, "owner.json"), JSON.stringify({ pid: process.pid, time: Date.now() }));
-      return () => fs.rm(lockPath, { recursive: true, force: true });
+      await fs.writeFile(ownerFile, JSON.stringify({ pid: process.pid, time: Date.now(), token }));
+      return;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-      try {
-        const owner = JSON.parse(await fs.readFile(path.join(lockPath, "owner.json"), "utf8")) as { pid: number; time: number };
-        if (Date.now() - owner.time > 30_000 && !pidExists(owner.pid)) {
-          await fs.rm(lockPath, { recursive: true, force: true });
-          continue;
-        }
-      } catch { /* Another process may still be writing the owner file. */ }
-      await new Promise((resolve) => setTimeout(resolve, 100));
     }
+    const owner = await fs.readFile(ownerFile, "utf8").then((text) => JSON.parse(text) as LegacyOwner, () => null);
+    const modified = await fs.stat(lockPath).then((stat) => stat.mtimeMs, () => Date.now());
+    // An owner whose process is gone is crash debris and goes at once; a live owner is always waited for,
+    // whatever wrote it. Without an owner file, only age can tell (the accepted >30 s legacy limit).
+    const abandoned = owner ? !pidExists(owner.pid) : Date.now() - modified > 30_000;
+    if (abandoned) await fs.rm(lockPath, { recursive: true, force: true });
+    else await new Promise((resolve) => setTimeout(resolve, 100));
   }
-  throw new Error("Timed out waiting for the local session allocation lock");
+  throw new Error("Timed out waiting for an older localdev's allocation lock");
+}
+
+async function acquireLock(): Promise<() => Promise<void>> {
+  await fs.mkdir(stateRoot, { recursive: true, mode: 0o700 });
+  const deadline = Date.now() + 60_000;
+  let server: net.Server | null = null;
+  while (!server) {
+    server = await listenOnce(lockPort);
+    if (server) break;
+    if (Date.now() >= deadline) {
+      throw new Error(`Timed out waiting for the local session allocation lock (127.0.0.1:${lockPort}); if another program uses that port, set LOCAL_CLI_LOCK_PORT`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  const held = server;
+  const token = randomUUID();
+  try {
+    await takeLegacyLock(token, deadline);
+  } catch (error) {
+    await new Promise((resolve) => held.close(() => resolve(undefined)));
+    throw error;
+  }
+  return async () => {
+    try {
+      const owner = await fs.readFile(path.join(lockPath, "owner.json"), "utf8").then((text) => JSON.parse(text) as LegacyOwner, () => null);
+      if (owner?.token === token) await fs.rm(lockPath, { recursive: true, force: true });
+    } finally {
+      await new Promise((resolve) => held.close(() => resolve(undefined)));
+    }
+  };
 }
 
 function pidExists(pid: number): boolean {

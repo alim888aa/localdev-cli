@@ -31,7 +31,7 @@ test("issue draft formats project context without publishing", async () => {
   }
 });
 
-test("issue submit formats and labels bugs and requests through gh", async () => {
+test("issue submit publishes through the gh REST API and prints the draft when it cannot", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "localdev-issue-submit-"));
   const store = path.join(dir, "saved.json");
   const fakeGh = path.join(dir, "gh");
@@ -39,15 +39,32 @@ test("issue submit formats and labels bugs and requests through gh", async () =>
     await writeFile(fakeGh, `#!/usr/bin/env node
 const fs = require("node:fs");
 const args = process.argv.slice(2);
-const value = (flag) => args[args.indexOf(flag) + 1];
-if (args[0] === "issue" && args[1] === "create") {
+const field = (flag, name) => { const index = args.findIndex((value, i) => args[i - 1] === flag && value.startsWith(name + "=")); return args[index].slice(name.length + 1); };
+if (process.env.FAKE_GH_FAIL) { console.error("HTTP 403: GraphQL and REST blocked"); process.exit(1); }
+if (args[0] === "api" && args.includes("POST") && process.env.FAKE_GH_LOST_RESPONSE) {
   fs.writeFileSync(process.env.FAKE_GH_STORE, JSON.stringify({
-    title: value("--title"), label: value("--label"), body: fs.readFileSync(value("--body-file"), "utf8")
+    title: field("-f", "title"), label: field("-f", "labels[]"), body: fs.readFileSync(field("-F", "body").slice(1), "utf8")
   }));
-  console.log("https://github.com/alim888aa/localdev-cli/issues/123");
-} else if (args[0] === "issue" && args[1] === "view") {
+  console.error("connection reset by peer");
+  process.exit(1);
+}
+if (args[0] === "api" && args[1].startsWith("repos/alim888aa/localdev-cli/issues?")) {
+  if (process.env.FAKE_GH_LOOKUP_FAIL || !fs.existsSync(process.env.FAKE_GH_STORE)) { console.log("[]"); process.exit(process.env.FAKE_GH_LOOKUP_FAIL ? 1 : 0); }
   const saved = JSON.parse(fs.readFileSync(process.env.FAKE_GH_STORE, "utf8"));
-  console.log(JSON.stringify({ title: saved.title, url: "https://github.com/alim888aa/localdev-cli/issues/123", labels: [{ name: saved.label }], state: "OPEN" }));
+  // FAKE_GH_OLD_DUPLICATE: an identical report that was created a day ago (and maybe updated since).
+  const createdAt = process.env.FAKE_GH_OLD_DUPLICATE ? new Date(Date.now() - 86_400_000).toISOString() : new Date().toISOString();
+  console.log(JSON.stringify([{ number: 123, html_url: "https://github.com/alim888aa/localdev-cli/issues/123", title: saved.title, body: saved.body, created_at: createdAt }]));
+  process.exit(0);
+}
+if (args[0] === "api" && args.includes("POST") && process.env.FAKE_GH_NEVER_ARRIVED) { console.error("connection reset by peer"); process.exit(1); }
+if (args[0] === "api" && args.includes("POST")) {
+  fs.writeFileSync(process.env.FAKE_GH_STORE, JSON.stringify({
+    title: field("-f", "title"), label: field("-f", "labels[]"), body: fs.readFileSync(field("-F", "body").slice(1), "utf8")
+  }));
+  console.log(JSON.stringify({ number: 123, html_url: "https://github.com/alim888aa/localdev-cli/issues/123" }));
+} else if (args[0] === "api" && args[1] === "repos/alim888aa/localdev-cli/issues/123") {
+  const saved = JSON.parse(fs.readFileSync(process.env.FAKE_GH_STORE, "utf8"));
+  console.log(JSON.stringify({ title: saved.title, html_url: "https://github.com/alim888aa/localdev-cli/issues/123", labels: [{ name: saved.label }], state: "open" }));
 } else process.exit(2);
 `);
     await chmod(fakeGh, 0o755);
@@ -67,6 +84,27 @@ if (args[0] === "issue" && args[1] === "create") {
       assert.match(saved.body, /Project commit: `[0-9a-f]{40}`/);
       assert.doesNotMatch(stdout, /## Agent task|## What went wrong/);
     }
+    const input = path.join(dir, "bug.json");
+    const failed = await exec(process.execPath, [cli, "issue", "bug", "--input", input, "--submit"], { cwd: root, env: { ...env, FAKE_GH_FAIL: "1" } })
+      .then(() => assert.fail("publishing should fail"), (error) => error);
+    assert.match(failed.stdout, /## What went wrong/, "the draft is printed when publishing fails");
+    assert.match(failed.stderr, /GitHub rejected the issue, so nothing was created/);
+
+    // A lost response after GitHub created the issue is found again instead of reported as "nothing created".
+    await rm(store, { force: true });
+    const recovered = await exec(process.execPath, [cli, "issue", "bug", "--input", input, "--submit"], { cwd: root, env: { ...env, FAKE_GH_LOST_RESPONSE: "1" } });
+    assert.match(recovered.stdout, /Created https:\/\/github.com\/alim888aa\/localdev-cli\/issues\/123 \[bug\]/);
+
+    // If the lookup also fails, the outcome is reported as unknown and no draft invites a duplicate.
+    const unknown = await exec(process.execPath, [cli, "issue", "bug", "--input", input, "--submit"], { cwd: root, env: { ...env, FAKE_GH_LOST_RESPONSE: "1", FAKE_GH_LOOKUP_FAIL: "1" } })
+      .then(() => assert.fail("an unknown outcome should fail"), (error) => error);
+    assert.match(unknown.stderr, /Publishing outcome unknown .* before retrying/);
+    assert.doesNotMatch(unknown.stdout, /## What went wrong/);
+
+    // An identical OLD report must not be mistaken for the one this POST may have created.
+    const stale = await exec(process.execPath, [cli, "issue", "bug", "--input", input, "--submit"], { cwd: root, env: { ...env, FAKE_GH_NEVER_ARRIVED: "1", FAKE_GH_OLD_DUPLICATE: "1" } })
+      .then(() => assert.fail("an old duplicate is not proof of creation"), (error) => error);
+    assert.match(stale.stderr, /Publishing outcome unknown/);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

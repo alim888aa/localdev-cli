@@ -15,6 +15,14 @@ export function birthOf(pid: number): string | null {
   } catch { return null; }
 }
 
+/** The recorded process is still the same one (start time) and still in the group about to be signalled. */
+function memberStillIn(member: { pid: number; birth: string }, pgid: number): boolean {
+  try {
+    const [lstart, group] = [birthOf(member.pid), Number(execFileSync("ps", ["-o", "pgid=", "-p", String(member.pid)], { encoding: "utf8" }).trim())];
+    return lstart === member.birth && group === pgid;
+  } catch { return false; }
+}
+
 function isOwned(record: OwnedProcess): boolean {
   return birthOf(record.pid) === record.birth;
 }
@@ -28,7 +36,15 @@ function guardOwnsGroup(record: OwnedProcess): boolean {
 }
 
 function groupExists(pgid: number): boolean {
-  try { process.kill(-pgid, 0); return true; } catch { return false; }
+  try { process.kill(-pgid, 0); } catch { return false; }
+  // Exited members stay signalable as zombies until reaped, and some sandboxes' PID 1 reaps slowly.
+  // Only a live member means the group is still running.
+  try {
+    return execFileSync("ps", ["-A", "-o", "pgid=,stat="], { encoding: "utf8" }).split("\n").some((line) => {
+      const [group, stat] = line.trim().split(/\s+/);
+      return Number(group) === pgid && Boolean(stat) && !stat.startsWith("Z");
+    });
+  } catch { return true; }
 }
 
 function descendsFromGroup(pid: number, pgid: number): boolean {
@@ -44,6 +60,62 @@ function descendsFromGroup(pid: number, pgid: number): boolean {
     } catch { return false; }
   }
   return false;
+}
+
+type Member = { pid: number; birth: string };
+type EscapedGroup = { pgid: number; members: Member[] };
+type StoredEscapedGroup = EscapedGroup | { pgid: number; pid: number; birth: string };
+
+function processTable(): Map<number, { parent: number; group: number }> {
+  const table = new Map<number, { parent: number; group: number }>();
+  let output: string;
+  try { output = execFileSync("ps", ["-A", "-o", "pid=,ppid=,pgid="], { encoding: "utf8" }); }
+  catch { return table; }
+  for (const line of output.trim().split("\n")) {
+    const [pid, parent, group] = line.trim().split(/\s+/).map(Number);
+    if (Number.isSafeInteger(pid)) table.set(pid, { parent, group });
+  }
+  return table;
+}
+
+/**
+ * Descendants of the owned group that moved into their own process group, which a group signal misses.
+ * Every current member is recorded, so the group stays verifiable after the process that created it exits.
+ */
+function findEscapedGroups(pgid: number): EscapedGroup[] {
+  const table = processTable();
+  const groups = new Set<number>();
+  for (const [, info] of table) {
+    if (info.group === pgid || groups.has(info.group)) continue;
+    const seen = new Set<number>();
+    let current = info.parent;
+    while (current > 1 && !seen.has(current)) {
+      seen.add(current);
+      const ancestor = table.get(current);
+      if (!ancestor) break;
+      if (ancestor.group === pgid) { groups.add(info.group); break; }
+      current = ancestor.parent;
+    }
+  }
+  return [...groups].map((group) => ({
+    pgid: group,
+    members: [...table].filter(([, info]) => info.group === group)
+      .map(([pid]) => ({ pid, birth: birthOf(pid) }))
+      .filter((member): member is Member => member.birth !== null),
+  })).filter((group) => group.members.length);
+}
+
+function mergeGroups(...lists: Array<StoredEscapedGroup[] | undefined>): EscapedGroup[] {
+  const merged = new Map<number, Map<number, Member>>();
+  for (const list of lists) {
+    for (const stored of list ?? []) {
+      const members = "members" in stored ? stored.members : [{ pid: stored.pid, birth: stored.birth }];
+      const known = merged.get(stored.pgid) ?? new Map<number, Member>();
+      for (const member of members) if (!known.has(member.pid)) known.set(member.pid, member);
+      merged.set(stored.pgid, known);
+    }
+  }
+  return [...merged].map(([pgid, members]) => ({ pgid, members: [...members.values()] }));
 }
 
 /** Check the listener PID, so another app cannot make an owned session look healthy. */
@@ -158,6 +230,8 @@ export async function waitForService(
     }
     if (await portOpen(spec.readyHost ?? "127.0.0.1", port) && ownedListener({ ...record, readyPort: port })) {
       await ensureActive();
+      // Record detached descendants now: once their launcher exits, ancestry can no longer find them.
+      record.escapedGroups = mergeGroups(record.escapedGroups, findEscapedGroups(record.pid));
       child.unref();
       return;
     }
@@ -186,23 +260,43 @@ export async function waitForSeed(child: ChildProcess, exitFile: string, timeout
   throw new Error("Fixture seed supervisor exited before recording a result");
 }
 
-/** Stop the owned process group, including children left by an exited launcher. */
+/**
+ * Stop the owned process group, including children left by an exited launcher and descendants that
+ * moved into their own groups. Returns false unless every owned group is verified gone.
+ */
 export async function stopService(record: OwnedProcess): Promise<boolean> {
-  if (!groupExists(record.pid)) return true;
-  if (!isOwned(record) && !guardOwnsGroup(record)) return false;
-  try { process.kill(-record.pid, "SIGTERM"); } catch { return false; }
+  const mainAlive = groupExists(record.pid);
+  if (mainAlive && !isOwned(record) && !guardOwnsGroup(record)) return false;
+  const known = mergeGroups(record.escapedGroups, mainAlive ? findEscapedGroups(record.pid) : [])
+    .filter((group) => groupExists(group.pgid));
+  // An escaped group is signalled only while a recorded member is still the same process (no PID reuse).
+  // A live group with no verifiable member fails closed so the receipt is kept for inspection.
+  const verified = known.filter((group) => group.members.some((member) => memberStillIn(member, group.pgid)));
+  const unverified = known.length - verified.length;
+  if (!mainAlive && !verified.length) return unverified === 0;
+  const targets = [...(mainAlive ? [record.pid] : []), ...verified.map((group) => group.pgid)];
+  // Re-check identity before each signal: a group ID can be reused once all of its members exit.
+  const stillOwned = (pgid: number) => pgid === record.pid
+    ? isOwned(record) || guardOwnsGroup(record)
+    : verified.find((group) => group.pgid === pgid)!.members.some((member) => memberStillIn(member, pgid));
+  for (const pgid of targets) { if (stillOwned(pgid)) { try { process.kill(-pgid, "SIGTERM"); } catch { /* Already exited. */ } } }
+  const remaining = () => targets.filter(groupExists);
   const deadline = Date.now() + 4_000;
-  while (Date.now() < deadline && groupExists(record.pid)) {
+  while (Date.now() < deadline && remaining().length) {
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
-  if (groupExists(record.pid)) {
-    try { process.kill(-record.pid, "SIGKILL"); } catch { /* Group already exited. */ }
+  // A remaining group whose identity can no longer be verified is not force-killed; it fails closed below.
+  for (const pgid of remaining()) { if (stillOwned(pgid)) { try { process.kill(-pgid, "SIGKILL"); } catch { /* Already exited. */ } } }
+  const killDeadline = Date.now() + 2_000;
+  while (Date.now() < killDeadline && remaining().length) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
   }
-  return true;
+  return remaining().length === 0 && unverified === 0;
 }
 
+/** The owned group still has a live (non-zombie) member and its identity checks out. */
 export function processAlive(record: OwnedProcess): boolean {
-  return isOwned(record) || guardOwnsGroup(record);
+  return groupExists(record.pid) && (isOwned(record) || guardOwnsGroup(record));
 }
 
 export async function processHealth(record: OwnedProcess): Promise<{ reachable: boolean | null; listenerOwned: boolean | null; checks: Array<{ name: string; reachable: boolean; listenerOwned: boolean }>; commandExit: object | null }> {
