@@ -54,6 +54,8 @@ export interface OwnedProcess {
   readyPort?: number;
   readyHost?: string;
   readyChecks?: Array<{ name: string; port: number; host: string }>;
+  /** Descendant process groups started with their own group (e.g. detached emulators). */
+  escapedGroups?: Array<{ pgid: number; pid: number; birth: string }>;
 }
 
 export interface SessionReceipt {

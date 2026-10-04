@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile, execFileSync, spawn } from "node:child_process";
-import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -407,6 +407,46 @@ test("stop kills a server whose launcher exited", async () => {
     assert.equal((await fetch(receipt.urls.app)).status, 200);
     await run("stop", receipt.id);
     await assert.rejects(fetch(receipt.urls.app));
+  } finally {
+    if (receipt) await run("stop", receipt.id).catch(() => undefined);
+    await rm(state, { recursive: true, force: true });
+  }
+});
+
+test("stop kills a server that moved into its own process group while its launcher lives", async () => {
+  const state = await mkdtemp(path.join(os.tmpdir(), "local-cli-detached-"));
+  const env = { ...process.env, LOCAL_CLI_STATE_DIR: state };
+  const run = async (...args) => {
+    const { stdout } = await exec(process.execPath, [cli, ...args], { env, cwd: root });
+    return JSON.parse(stdout);
+  };
+  let receipt;
+  try {
+    receipt = await run("startup", "detached", "--project", root, "--adapter", adapter);
+    assert.equal((await fetch(receipt.urls.app)).status, 200);
+    await run("stop", receipt.id);
+    await assert.rejects(fetch(receipt.urls.app), "the detached server is stopped too");
+  } finally {
+    if (receipt) await run("stop", receipt.id).catch(() => undefined);
+    await rm(state, { recursive: true, force: true });
+  }
+});
+
+test("a lock abandoned before its owner file was written does not block startup", async () => {
+  const state = await mkdtemp(path.join(os.tmpdir(), "local-cli-stale-lock-"));
+  const env = { ...process.env, LOCAL_CLI_STATE_DIR: state };
+  const run = async (...args) => {
+    const { stdout } = await exec(process.execPath, [cli, ...args], { env, cwd: root });
+    return JSON.parse(stdout);
+  };
+  let receipt;
+  try {
+    const lock = path.join(state, "allocation.lock");
+    await mkdir(lock);
+    const old = new Date(Date.now() - 60_000);
+    await utimes(lock, old, old);
+    receipt = await run("startup", "--project", root, "--adapter", adapter);
+    assert.equal(receipt.state, "ready");
   } finally {
     if (receipt) await run("stop", receipt.id).catch(() => undefined);
     await rm(state, { recursive: true, force: true });

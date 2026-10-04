@@ -13,7 +13,10 @@ export declare function spawnSeed(spec: CommandSpec, root: string, dir: string):
 }>;
 export declare function waitForService(child: ChildProcess, spec: ServiceSpec, port: number, record: OwnedProcess, ensureActive: () => Promise<void>): Promise<void>;
 export declare function waitForSeed(child: ChildProcess, exitFile: string, timeoutMs?: number, ensureActive?: () => Promise<void>): Promise<void>;
-/** Stop the owned process group, including children left by an exited launcher. */
+/**
+ * Stop the owned process group, including children left by an exited launcher and descendants that
+ * moved into their own groups. Returns false unless every owned group is verified gone.
+ */
 export declare function stopService(record: OwnedProcess): Promise<boolean>;
 export declare function processAlive(record: OwnedProcess): boolean;
 export declare function processHealth(record: OwnedProcess): Promise<{

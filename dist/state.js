@@ -59,7 +59,15 @@ async function acquireLock() {
                     continue;
                 }
             }
-            catch { /* Another process may still be writing the owner file. */ }
+            catch {
+                // The owner file is written right after the directory. One still missing after
+                // 30 seconds means its writer died in between, so the lock is abandoned.
+                const created = await fs.stat(lockPath).then((stat) => stat.mtimeMs, () => undefined);
+                if (created !== undefined && Date.now() - created > 30_000) {
+                    await fs.rm(lockPath, { recursive: true, force: true });
+                    continue;
+                }
+            }
             await new Promise((resolve) => setTimeout(resolve, 100));
         }
     }

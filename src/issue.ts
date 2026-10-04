@@ -156,28 +156,51 @@ function render(kind: Kind, fields: Fields, context: {
   return { title, body: `${body.join("\n\n")}\n`, label: kind === "bug" ? "bug" : "enhancement" };
 }
 
+/** Thrown when nothing was created, so the caller can print the draft for someone else to file. */
+class NotPublishedError extends Error {}
+
+// REST rather than `gh issue create`: cloud sandboxes block GitHub GraphQL but allow REST.
 async function publish(title: string, body: string, label: string): Promise<string> {
   const temporary = await fs.mkdtemp(path.join(os.tmpdir(), "localdev-issue-"));
   const bodyFile = path.join(temporary, "body.md");
   try {
     await fs.writeFile(bodyFile, body, { mode: 0o600 });
-    const url = execFileSync("gh", ["issue", "create", "-R", REPO, "--title", title, "--body-file", bodyFile, "--label", label], {
-      encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
-    }).trim();
-    let saved: { title: string; url: string; labels: Array<{ name: string }>; state: string };
+    let created: { number: number; html_url: string };
     try {
-      saved = JSON.parse(execFileSync("gh", ["issue", "view", url, "-R", REPO, "--json", "title,url,labels,state"], {
+      created = JSON.parse(execFileSync("gh", [
+        "api", `repos/${REPO}/issues`, "-X", "POST",
+        "-f", `title=${title}`, "-F", `body=@${bodyFile}`, "-f", `labels[]=${label}`,
+      ], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }));
+    } catch (error) {
+      const stderr = String((error as { stderr?: unknown }).stderr ?? "").trim();
+      throw new NotPublishedError(stderr || (error instanceof Error ? error.message : String(error)));
+    }
+    const url = created.html_url;
+    let saved: { title: string; html_url: string; labels: Array<{ name: string }>; state: string };
+    try {
+      saved = JSON.parse(execFileSync("gh", ["api", `repos/${REPO}/issues/${created.number}`], {
         encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
       }));
     } catch {
       throw new Error(`Issue was created at ${url}, but readback failed; inspect it before retrying`);
     }
-    if (saved.title !== title || saved.url !== url || !saved.labels.some((item) => item.name === label)) {
+    if (saved.title !== title || saved.html_url !== url || !saved.labels.some((item) => item.name === label)) {
       throw new Error(`Issue was created at ${url}, but its title or label did not match; inspect it before retrying`);
     }
     return url;
   } finally {
     await fs.rm(temporary, { recursive: true, force: true });
+  }
+}
+
+async function publishOrPrintDraft(report: { title: string; body: string; label: string }): Promise<void> {
+  try {
+    const url = await publish(report.title, report.body, report.label);
+    console.log(`Created ${url} [${report.label}]`);
+  } catch (error) {
+    if (!(error instanceof NotPublishedError)) throw error;
+    console.log(`# ${report.title}\n\n${report.body}\nLabel: ${report.label}\n`);
+    throw new Error(`Could not publish to ${REPO}; nothing was created. The draft is printed above for someone with access to file. gh said: ${error.message}`);
   }
 }
 
@@ -202,8 +225,7 @@ export async function issueCommand(args: string[]): Promise<void> {
   });
   if (options.submit) {
     if (!cliRef) throw new Error("Cannot submit without the installed localdev Git commit; pass --cli-ref SHA");
-    const url = await publish(report.title, report.body, report.label);
-    console.log(`Created ${url} [${report.label}]`);
+    await publishOrPrintDraft(report);
     return;
   }
   console.log(`# ${report.title}\n\n${report.body}\nLabel: ${report.label}\n`);
@@ -213,8 +235,7 @@ export async function issueCommand(args: string[]): Promise<void> {
       const answer = await rl.question("Publish this issue to the private localdev repo? [y/N] ");
       if (answer.trim().toLowerCase() === "y") {
         if (!cliRef) throw new Error("Cannot submit without the installed localdev Git commit; rerun with --cli-ref SHA");
-        const url = await publish(report.title, report.body, report.label);
-        console.log(`Created ${url} [${report.label}]`);
+        await publishOrPrintDraft(report);
         return;
       }
     } finally {

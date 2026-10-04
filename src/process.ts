@@ -46,6 +46,44 @@ function descendsFromGroup(pid: number, pgid: number): boolean {
   return false;
 }
 
+type EscapedGroup = { pgid: number; pid: number; birth: string };
+
+/** Descendants of the owned group that moved into their own process group, which a group signal misses. */
+function findEscapedGroups(pgid: number): EscapedGroup[] {
+  let output: string;
+  try { output = execFileSync("ps", ["-A", "-o", "pid=,ppid=,pgid="], { encoding: "utf8" }); }
+  catch { return []; }
+  const table = new Map<number, { parent: number; group: number }>();
+  for (const line of output.trim().split("\n")) {
+    const [pid, parent, group] = line.trim().split(/\s+/).map(Number);
+    if (Number.isSafeInteger(pid)) table.set(pid, { parent, group });
+  }
+  const escaped = new Map<number, EscapedGroup>();
+  for (const [pid, info] of table) {
+    if (info.group === pgid || escaped.has(info.group)) continue;
+    const seen = new Set<number>();
+    let current = info.parent;
+    while (current > 1 && !seen.has(current)) {
+      seen.add(current);
+      const ancestor = table.get(current);
+      if (!ancestor) break;
+      if (ancestor.group === pgid) {
+        const birth = birthOf(pid);
+        if (birth) escaped.set(info.group, { pgid: info.group, pid, birth });
+        break;
+      }
+      current = ancestor.parent;
+    }
+  }
+  return [...escaped.values()];
+}
+
+function mergeGroups(...lists: Array<EscapedGroup[] | undefined>): EscapedGroup[] {
+  const merged = new Map<number, EscapedGroup>();
+  for (const list of lists) for (const group of list ?? []) if (!merged.has(group.pgid)) merged.set(group.pgid, group);
+  return [...merged.values()];
+}
+
 /** Check the listener PID, so another app cannot make an owned session look healthy. */
 function ownedListener(record: OwnedProcess): boolean {
   if (!record.readyPort) return false;
@@ -158,6 +196,8 @@ export async function waitForService(
     }
     if (await portOpen(spec.readyHost ?? "127.0.0.1", port) && ownedListener({ ...record, readyPort: port })) {
       await ensureActive();
+      // Record detached descendants now: once their launcher exits, ancestry can no longer find them.
+      record.escapedGroups = mergeGroups(record.escapedGroups, findEscapedGroups(record.pid));
       child.unref();
       return;
     }
@@ -186,19 +226,30 @@ export async function waitForSeed(child: ChildProcess, exitFile: string, timeout
   throw new Error("Fixture seed supervisor exited before recording a result");
 }
 
-/** Stop the owned process group, including children left by an exited launcher. */
+/**
+ * Stop the owned process group, including children left by an exited launcher and descendants that
+ * moved into their own groups. Returns false unless every owned group is verified gone.
+ */
 export async function stopService(record: OwnedProcess): Promise<boolean> {
-  if (!groupExists(record.pid)) return true;
-  if (!isOwned(record) && !guardOwnsGroup(record)) return false;
-  try { process.kill(-record.pid, "SIGTERM"); } catch { return false; }
+  const mainAlive = groupExists(record.pid);
+  if (mainAlive && !isOwned(record) && !guardOwnsGroup(record)) return false;
+  // An escaped group is only signalled while its recorded member is the same process (no PID reuse).
+  const escaped = mergeGroups(record.escapedGroups, mainAlive ? findEscapedGroups(record.pid) : [])
+    .filter((group) => birthOf(group.pid) === group.birth && groupExists(group.pgid));
+  if (!mainAlive && !escaped.length) return true;
+  const targets = [...(mainAlive ? [record.pid] : []), ...escaped.map((group) => group.pgid)];
+  for (const pgid of targets) { try { process.kill(-pgid, "SIGTERM"); } catch { /* Already exited. */ } }
+  const remaining = () => targets.filter(groupExists);
   const deadline = Date.now() + 4_000;
-  while (Date.now() < deadline && groupExists(record.pid)) {
+  while (Date.now() < deadline && remaining().length) {
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
-  if (groupExists(record.pid)) {
-    try { process.kill(-record.pid, "SIGKILL"); } catch { /* Group already exited. */ }
+  for (const pgid of remaining()) { try { process.kill(-pgid, "SIGKILL"); } catch { /* Already exited. */ } }
+  const killDeadline = Date.now() + 2_000;
+  while (Date.now() < killDeadline && remaining().length) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
   }
-  return true;
+  return remaining().length === 0;
 }
 
 export function processAlive(record: OwnedProcess): boolean {
