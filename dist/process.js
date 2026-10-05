@@ -5,6 +5,7 @@ import net from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { linuxListenerOwned, linuxListenerPids } from "./linux-listener.js";
+import { applyOutboundPolicy } from "./outbound.js";
 const supervisorPath = fileURLToPath(new URL("./supervisor.js", import.meta.url));
 export function birthOf(pid) {
     try {
@@ -232,7 +233,7 @@ function portOpen(host, port) {
     });
 }
 /** A persistent supervisor keeps the process group identifiable if a launcher exits. */
-async function spawnManaged(name, spec, root, sessionDir) {
+async function spawnManaged(name, spec, root, sessionDir, outbound) {
     const token = randomUUID();
     const log = path.join(sessionDir, `${name}.log`);
     const configFile = path.join(sessionDir, `${token}.command.json`);
@@ -242,7 +243,7 @@ async function spawnManaged(name, spec, root, sessionDir) {
         command: spec.command,
         args: spec.args ?? [],
         cwd: spec.cwd ?? root,
-        env: { ...process.env, ...spec.env },
+        env: applyOutboundPolicy({ ...process.env, ...spec.env }, outbound),
         exitFile,
         guardFile,
     }), { mode: 0o600 });
@@ -291,11 +292,11 @@ async function spawnManaged(name, spec, root, sessionDir) {
         throw error;
     }
 }
-export function spawnService(spec, root, dir) {
-    return spawnManaged(spec.name, spec, root, dir);
+export function spawnService(spec, root, dir, outbound) {
+    return spawnManaged(spec.name, spec, root, dir, outbound);
 }
-export function spawnSeed(spec, root, dir) {
-    return spawnManaged("seed", spec, root, dir);
+export function spawnSeed(spec, root, dir, outbound) {
+    return spawnManaged("seed", spec, root, dir, outbound);
 }
 export async function waitForService(child, spec, port, record, ensureActive) {
     const deadline = Date.now() + (spec.readyTimeoutMs ?? 60_000);

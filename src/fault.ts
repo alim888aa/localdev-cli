@@ -227,7 +227,8 @@ async function killService(id: string, portName: string): Promise<KillResult> {
     if (receipt.state !== "ready" || !(receipt.faults ?? []).some(isThisKill)) {
       throw new Error(`Session ${id} was stopped during the kill; ${record.name} was not restarted`);
     }
-    const started = await launchService(spec, { root: receipt.projectRoot, sessionDir: receipt.sessionDir, ports: receipt.bindPorts ?? receipt.ports });
+    const started = await launchService(spec, { root: receipt.projectRoot, sessionDir: receipt.sessionDir,
+      ports: receipt.bindPorts ?? receipt.ports, outbound: receipt.outbound });
     const index = receipt.processes.findIndex((item) => item.pid === record.pid && item.birth === record.birth);
     if (index < 0) receipt.processes.push(started.owned);
     else receipt.processes[index] = started.owned;

@@ -115,6 +115,34 @@ export default {
   the proxy, so faults reach only clients configured with `ports`. See
   [ADR 0001](adr/0001-fault-proxy-opt-in-ports.md).
 
+## No outbound
+
+`localdev startup --no-outbound` runs every service and the seed under a deny
+policy. It is applied after the adapter's `env`, so an adapter can't undo it:
+
+- `NODE_OPTIONS` gains `--import=<localdev's outbound preload>`. In every Node
+  process, including Node children such as Next workers, that preload refuses
+  TCP connections to non-loopback addresses with `ELOCALDEV_OUTBOUND`.
+  Hostnames are resolved first, so names that point at loopback still work.
+- `HTTP(S)_PROXY`, `ALL_PROXY` and their lowercase forms are set to empty, and
+  `NODE_USE_ENV_PROXY` is removed, so nothing tunnels out through an egress
+  proxy (Codex cloud sets one).
+
+Limits:
+
+- **Non-Node processes aren't enforced on a Mac.** That covers Java (the
+  Firestore emulator), Go (Data Connect) and postgres. In Codex cloud,
+  clearing the proxy variables usually cuts them off as well.
+- **DNS lookups still happen.** UDP isn't covered, and any loopback
+  destination is allowed. This is a guard against accidental calls, not a
+  sandbox.
+- **First-run downloads fail.** Warm caches without the flag first, for
+  example Firebase emulator jars and `next/font/google`.
+- **Next rewrites `NODE_OPTIONS` for its workers.** It keeps flags it doesn't
+  own, but check your framework keeps `--import`.
+- **The flag survives restarts.** It applies to services restarted by
+  `fault --mode kill`.
+
 ## Cross-project isolation
 
 All installations on the same machine use the same state directory and port

@@ -355,3 +355,29 @@ test("fault validates its flags before touching the session", async () => {
     await cleanup();
   }
 });
+
+test("--no-outbound blocks the app and its children from outside hosts while loopback works", async () => {
+  const { start, run, cleanup } = await session("localdev-outbound-");
+  try {
+    const blocked = await start("--no-outbound", "--project", root, "--adapter", faultsAdapter);
+    assert.equal(blocked.outbound, "blocked");
+    const probe = JSON.parse(await text(`${blocked.urls.app}/probe`));
+    assert.equal(probe.net, "ELOCALDEV_OUTBOUND");
+    assert.equal(probe.fetch, "ELOCALDEV_OUTBOUND");
+    assert.equal(probe.loopback, "loopback", "the session's own services, through the proxy, still answer");
+    assert.equal(probe.httpProxy, "", "the adapter's proxy variable is cleared");
+    assert.match(probe.nodeOptions, /--max-old-space-size=256 --import=file:/, "the adapter's NODE_OPTIONS are kept");
+    assert.equal(await text(`${blocked.urls.app}/probe-child`), "ELOCALDEV_OUTBOUND", "a child process is blocked too");
+    await run("fault", blocked.id, "app", "--mode", "kill");
+    assert.equal(JSON.parse(await text(`${blocked.urls.app}/probe`)).net, "ELOCALDEV_OUTBOUND", "a restarted service keeps the policy");
+
+    const open = await start("--parallel", "--project", root, "--adapter", faultsAdapter);
+    assert.equal(open.outbound, "allowed");
+    const unblocked = JSON.parse(await text(`${open.urls.app}/probe`));
+    assert.notEqual(unblocked.net, "ELOCALDEV_OUTBOUND");
+    assert.equal(unblocked.httpProxy, "http://127.0.0.1:9");
+    assert.notEqual(await text(`${open.urls.app}/probe-child`), "ELOCALDEV_OUTBOUND");
+  } finally {
+    await cleanup();
+  }
+});

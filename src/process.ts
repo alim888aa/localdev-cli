@@ -5,6 +5,7 @@ import net from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { linuxListenerOwned, linuxListenerPids } from "./linux-listener.js";
+import { applyOutboundPolicy, type OutboundPolicy } from "./outbound.js";
 import type { CommandSpec, OwnedProcess, ProcessIdentity, ServiceSpec } from "./types.js";
 
 const supervisorPath = fileURLToPath(new URL("./supervisor.js", import.meta.url));
@@ -200,6 +201,7 @@ async function spawnManaged(
   spec: CommandSpec,
   root: string,
   sessionDir: string,
+  outbound?: OutboundPolicy,
 ): Promise<{ owned: OwnedProcess; child: ChildProcess; exitFile: string }> {
   const token = randomUUID();
   const log = path.join(sessionDir, `${name}.log`);
@@ -210,7 +212,7 @@ async function spawnManaged(
     command: spec.command,
     args: spec.args ?? [],
     cwd: spec.cwd ?? root,
-    env: { ...process.env, ...spec.env },
+    env: applyOutboundPolicy({ ...process.env, ...spec.env }, outbound),
     exitFile,
     guardFile,
   }), { mode: 0o600 });
@@ -249,12 +251,12 @@ async function spawnManaged(
   }
 }
 
-export function spawnService(spec: ServiceSpec, root: string, dir: string) {
-  return spawnManaged(spec.name, spec, root, dir);
+export function spawnService(spec: ServiceSpec, root: string, dir: string, outbound?: OutboundPolicy) {
+  return spawnManaged(spec.name, spec, root, dir, outbound);
 }
 
-export function spawnSeed(spec: CommandSpec, root: string, dir: string) {
-  return spawnManaged("seed", spec, root, dir);
+export function spawnSeed(spec: CommandSpec, root: string, dir: string, outbound?: OutboundPolicy) {
+  return spawnManaged("seed", spec, root, dir, outbound);
 }
 
 export async function waitForService(

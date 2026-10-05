@@ -11,7 +11,9 @@ export default {
     const server = path.join(projectRoot, "test", "fault-server.mjs");
     const service = (name, port, readyPort) => ({
       name, command: process.execPath, args: [server, String(port), path.join(dataDir, name)],
-      env: { LOCALDEV_TEST_SECRET: "private-test-value", LOCALDEV_LOOPBACK_URL: `http://127.0.0.1:${ports.proxied}/echo/loopback` },
+      // HTTP_PROXY and NODE_OPTIONS show how --no-outbound composes with an adapter's own env.
+      env: { LOCALDEV_TEST_SECRET: "private-test-value", LOCALDEV_LOOPBACK_URL: `http://127.0.0.1:${ports.proxied}/echo/loopback`,
+        HTTP_PROXY: "http://127.0.0.1:9", NODE_OPTIONS: "--max-old-space-size=256" },
       readyPort, readyTimeoutMs: 10_000,
     });
     return {

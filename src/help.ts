@@ -2,7 +2,7 @@ const help: Record<string, string> = {
   overview: `localdev — isolated local test sessions for any project
 
 Usage:
-  localdev startup [fixture] [--project DIR] [--adapter FILE] [--replace [ID] | --parallel]
+  localdev startup [fixture] [--project DIR] [--adapter FILE] [--replace [ID] | --parallel] [--no-outbound]
   localdev status [ID]
   localdev stop ID
   localdev fault ID PORT --mode pause|fail|slow|hold|kill [--ms N] [--count N]
@@ -24,13 +24,15 @@ its own fixtures in local.adapter.mjs and should list them in its agent guide.`,
 
   startup: `Start an isolated app and emulator session from a project checkout.
 
-Usage: localdev startup [fixture] [--project DIR] [--adapter FILE] [--replace [ID] | --parallel]
+Usage: localdev startup [fixture] [--project DIR] [--adapter FILE] [--replace [ID] | --parallel] [--no-outbound]
 
   fixture         Project-defined test data; omit for the adapter's defaultFixture.
   --project DIR   Project checkout; defaults to the current directory.
   --adapter FILE  Adapter file; defaults to <project>/local.adapter.mjs.
   --replace [ID] Stop one healthy matching session, then start a fresh one.
   --parallel     Deliberately keep matching sessions and start another.
+  --no-outbound  Block the app, its workers and the seed from reaching outside
+                 hosts (Node processes; loopback and emulators still work).
 
 Each session gets its own ports and data, even beside other projects. The
 receipt shows its ID, URLs, checkout commit, logs, and credentials-file path.
@@ -45,7 +47,14 @@ Examples:
   localdev startup messages
   localdev startup messages --replace
   localdev startup messages --parallel
-  localdev startup catalog --project /path/to/project`,
+  localdev startup catalog --project /path/to/project
+  localdev startup --no-outbound
+
+--no-outbound refuses non-loopback connections from every Node process of the
+session (error code ELOCALDEV_OUTBOUND) and clears HTTP(S)_PROXY. It survives
+fault --mode kill restarts; status shows outbound: "blocked". Java, Go and
+other non-Node children are not enforced on a Mac. It is a guard against
+accidental calls to paid or real services, not a sandbox.`,
 
   status: `Show localdev sessions and their health.
 

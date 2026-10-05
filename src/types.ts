@@ -120,6 +120,8 @@ export interface SessionReceipt {
   credentialsFile?: string;
   /** The adapter's service specs, env included, so kill can restart one. Never shown by status. */
   services?: ServiceSpec[];
+  /** Set by startup --no-outbound; every service, seed and restart runs under it. */
+  outbound?: "deny";
   cleanupPaths?: string[];
   processes: OwnedProcess[];
   /** Recorded before any process is paused, so stop and --clear can always resume it. */

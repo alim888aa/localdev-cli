@@ -1,3 +1,4 @@
+import type { OutboundPolicy } from "./outbound.js";
 import { spawnService, waitForService } from "./process.js";
 import type { OwnedProcess, ServiceSpec } from "./types.js";
 
@@ -11,10 +12,10 @@ export interface LaunchedService {
  * The one way localdev starts a long-running process: startup's services, the fault proxy, and a service restarted
  * by `fault --mode kill`. Two phases, so a caller can spawn and record under the state lock and wait for
  * readiness outside it. `ports` maps the spec's ready port names to the ports it listens on (bind ports for
- * services, public ports for the proxy).
+ * services, public ports for the proxy). `outbound` is the session's network policy (never applied to the proxy).
  */
-export async function launchService(spec: ServiceSpec, { root, sessionDir, ports }: {
-  root: string; sessionDir: string; ports: Record<string, number>;
+export async function launchService(spec: ServiceSpec, { root, sessionDir, ports, outbound }: {
+  root: string; sessionDir: string; ports: Record<string, number>; outbound?: OutboundPolicy;
 }): Promise<LaunchedService> {
   const names = spec.readyPorts ?? (spec.readyPort ? [spec.readyPort] : []);
   if (!names.length) throw new Error(`Service ${spec.name} has no readiness ports`);
@@ -23,7 +24,7 @@ export async function launchService(spec: ServiceSpec, { root, sessionDir, ports
     if (!port) throw new Error(`Unknown readyPort: ${name}`);
     return { name, port, host: spec.readyHost ?? "127.0.0.1" };
   });
-  const { owned, child } = await spawnService(spec, root, sessionDir);
+  const { owned, child } = await spawnService(spec, root, sessionDir, outbound);
   owned.launchMode = spec.launchMode;
   owned.readyPort = checks[0].port;
   owned.readyHost = checks[0].host;

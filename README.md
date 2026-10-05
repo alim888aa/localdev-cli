@@ -36,6 +36,15 @@ in 20000–59999. Emulator and other named ports keep their independent allocati
 See [the adapter guide](docs/adapter.md) when adding another project. For local
 CLI development, run `pnpm install`, `pnpm build`, and `pnpm test` here.
 
+## Keep a session offline
+
+`localdev startup --no-outbound` stops the app, its workers and the seed from
+reaching outside hosts, so local tests never call paid AI providers or real
+services. Loopback traffic, including emulators and the session's other
+services, still works. Blocked calls fail fast with `ELOCALDEV_OUTBOUND`, and
+`status` shows `outbound: "blocked"`. It covers Node processes. See
+[the adapter guide](docs/adapter.md#no-outbound) for its limits.
+
 ## Fail a service on purpose
 
 Verifiers and edge case hunters can make one service of a session misbehave,

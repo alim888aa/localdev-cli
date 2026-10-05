@@ -14,7 +14,7 @@ import { PROXY_NAME, proxySpec } from "./proxy.js";
 import type { ProjectAdapter, ProxyUnit, ServiceSpec, SessionReceipt } from "./types.js";
 
 function usage(): never {
-  throw new Error("Usage: localdev startup [fixture] [--project DIR] [--adapter FILE] [--replace [ID] | --parallel] | status [ID] | stop ID | fault ID PORT --mode pause|fail|slow|hold|kill [--ms N] [--count N] | fault ID PORT --release [--count N] | fault ID [PORT] --clear | issue bug|request [--input FILE] [--project DIR] [--session ID] [--cli-ref SHA] [--submit]");
+  throw new Error("Usage: localdev startup [fixture] [--project DIR] [--adapter FILE] [--replace [ID] | --parallel] [--no-outbound] | status [ID] | stop ID | fault ID PORT --mode pause|fail|slow|hold|kill [--ms N] [--count N] | fault ID PORT --release [--count N] | fault ID [PORT] --clear | issue bug|request [--input FILE] [--project DIR] [--session ID] [--cli-ref SHA] [--submit]");
 }
 
 function option(args: string[], name: string): string | undefined {
@@ -169,6 +169,7 @@ async function publicReceipt(receipt: SessionReceipt): Promise<object> {
     ports: receipt.ports,
     proxiedPorts: Object.fromEntries(Object.entries(receipt.proxyPorts ?? {})
       .map(([name, unit]) => [name, unit === "http" ? "request" : "connection"])),
+    outbound: receipt.outbound === "deny" ? "blocked" : "allowed",
     urls: receipt.urls,
     dataDir: receipt.dataDir,
     credentialsFile: receipt.credentialsFile,
@@ -204,6 +205,7 @@ async function startup(args: string[]): Promise<void> {
         id, fixture, projectRoot, commit: gitCommit(projectRoot), adapterPath,
         sessionDir: dir, dataDir: path.join(dir, "data"), ports,
         ...(Object.keys(proxyPorts).length ? { bindPorts, proxyPorts } : {}),
+        ...(args.includes("--no-outbound") ? { outbound: "deny" as const } : {}),
         urls: {}, processes: [], state: "starting", ownerPid: process.pid, ownerBirth,
         createdAt: new Date().toISOString(),
       }), async (receipts) => {
@@ -241,7 +243,7 @@ async function startup(args: string[]): Promise<void> {
     await writeReceipt(receipt);
     // The fault proxy starts first and holds the public ports of proxied names for the whole boot.
     const proxy = proxySpec(receipt);
-    if (proxy) await launch(receipt, proxy, receipt.ports);
+    if (proxy) await launch(receipt, proxy, receipt.ports, undefined);
     const plan = await adapter.createSession(context);
     if ("cleanupPaths" in plan) {
       throw new Error("Adapter cleanupPaths must be declared before createSession");
@@ -257,10 +259,10 @@ async function startup(args: string[]): Promise<void> {
     // Kept (0600, never shown by status) so fault --mode kill can restart a service.
     receipt.services = plan.services;
     await writeReceipt(receipt);
-    for (const service of plan.services) await launch(receipt, service, context.bindPorts);
+    for (const service of plan.services) await launch(receipt, service, context.bindPorts, receipt.outbound);
     if (plan.seed) {
       await ensureStarting(receipt.id);
-      const { owned, child, exitFile } = await spawnSeed(plan.seed, projectRoot, receipt.sessionDir);
+      const { owned, child, exitFile } = await spawnSeed(plan.seed, projectRoot, receipt.sessionDir, receipt.outbound);
       receipt.processes.push(owned);
       await writeReceipt(receipt);
       await waitForSeed(child, exitFile, plan.seed.timeoutMs, () => ensureStarting(receipt.id));
@@ -296,9 +298,10 @@ async function startup(args: string[]): Promise<void> {
 }
 
 /** Start one long-running process for startup: record it before waiting, so stop can always find it. */
-async function launch(receipt: SessionReceipt, spec: ServiceSpec, ports: Record<string, number>): Promise<void> {
+async function launch(receipt: SessionReceipt, spec: ServiceSpec, ports: Record<string, number>,
+  outbound: SessionReceipt["outbound"]): Promise<void> {
   await ensureStarting(receipt.id);
-  const launched = await launchService(spec, { root: receipt.projectRoot, sessionDir: receipt.sessionDir, ports });
+  const launched = await launchService(spec, { root: receipt.projectRoot, sessionDir: receipt.sessionDir, ports, outbound });
   if (spec.name === PROXY_NAME) launched.owned.role = "proxy";
   receipt.processes.push(launched.owned);
   await writeReceipt(receipt);

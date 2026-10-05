@@ -44,7 +44,8 @@ const server = http.createServer(async (request, response) => {
   if (pathname === "/probe") {
     const loopback = process.env.LOCALDEV_LOOPBACK_URL;
     return send(JSON.stringify({ net: await netProbe(), fetch: await fetchProbe(),
-      loopback: loopback ? await (await fetch(loopback)).text() : null }));
+      loopback: loopback ? await (await fetch(loopback)).text() : null,
+      httpProxy: process.env.HTTP_PROXY ?? null, nodeOptions: process.env.NODE_OPTIONS ?? "" }));
   }
   if (pathname === "/probe-child") {
     const child = spawn(process.execPath, ["-e", netProbeSource], { stdio: ["ignore", "pipe", "inherit"] });
