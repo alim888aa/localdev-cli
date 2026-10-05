@@ -43,6 +43,8 @@ test("issue draft formats project context without publishing", async () => {
       [{ reporter: undefined }, /Missing issue field: reporter \(\{ source, agentId, project \}\)/],
       [{ reporter: { ...reporter, agentId: " " } }, /Missing issue field: reporter.agentId/],
       [{ reporter: { ...reporter, project: "a\nb" } }, /reporter.project must be one short line/],
+      [{ reporter: { ...reporter, project: "a\rb" } }, /reporter.project must be one short line/],
+      [{ reporter: { ...reporter, agentId: "<>" } }, /Missing issue field: reporter.agentId/],
     ]) {
       await writeFile(input, JSON.stringify({ ...JSON.parse(await readFile(input, "utf8")), ...fields }));
       await assert.rejects(exec(process.execPath, [cli, "issue", "bug", "--input", input], { cwd: root }), expected);

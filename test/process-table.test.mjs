@@ -3,7 +3,8 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { birthOf, isSameProcess, listProcesses, processEntry, readProcTable } from "../dist/process-table.js";
+import { spawnSync } from "node:child_process";
+import { birthOf, compareBirth, isSameProcess, listProcesses, processEntry, readProcTable } from "../dist/process-table.js";
 
 test("the procfs reader parses parent, group and zombie state, even with spaces and parentheses in names", async () => {
   const proc = await mkdtemp(path.join(os.tmpdir(), "localdev-proctable-"));
@@ -31,11 +32,14 @@ test("the procfs reader parses parent, group and zombie state, even with spaces 
 test("births are compared in the format they were recorded in, and never match another process", () => {
   const birth = birthOf(process.pid);
   assert.ok(birth, "this process has a birth");
-  if (process.platform === "linux") assert.match(birth, /^proc:\d+$/);
+  if (process.platform === "linux") assert.match(birth, /^proc:[^:]+:\d+$/, "a /proc birth names the boot and the start tick");
   assert.equal(isSameProcess(process.pid, birth), true);
   assert.equal(isSameProcess(process.pid, "proc:1"), false, "a different proc birth does not match");
   assert.equal(isSameProcess(process.pid, "Thu Jan  1 00:00:00 1970"), false, "a different ps-format birth does not match");
   assert.equal(isSameProcess(process.pid, null), false);
+  assert.equal(compareBirth(process.pid, birth), "same");
+  const exited = spawnSync(process.execPath, ["-e", "0"]).pid;
+  assert.equal(compareBirth(exited, birth), "unknown", "a PID that is gone has no readable birth: unknown, not different");
   assert.equal(processEntry(process.pid).group, processEntry(process.pid).group);
   assert.equal(processEntry(process.pid).zombie, false);
   assert.ok(listProcesses().some((entry) => entry.pid === process.pid && entry.parent === process.ppid));

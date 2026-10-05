@@ -17,6 +17,11 @@ export declare function birthOf(pid: number): string | null;
  * works.
  */
 export declare function isSameProcess(pid: number, recordedBirth: string | null | undefined): boolean;
+/**
+ * The tri-state behind isSameProcess, for callers that must tell a reused PID ("different") from a birth that
+ * could not be read ("unknown": the process is gone, or it exists but is unreadable and may still be the one).
+ */
+export declare function compareBirth(pid: number, recordedBirth: string | null | undefined): "same" | "different" | "unknown";
 /** The whole process table, or null when it cannot be read (callers then fail safe). */
 export declare function listProcesses(): ProcessEntry[] | null;
 /** One process, or null when it is gone or unreadable. */

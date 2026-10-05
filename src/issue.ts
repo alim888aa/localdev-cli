@@ -108,9 +108,12 @@ function reporter(fields: Fields): Array<[string, string]> {
   }
   return reporterFields.map(([key]) => {
     const item = (value as Fields)[key];
-    if (typeof item !== "string" || !item.trim()) throw new Error(`Missing issue field: reporter.${key}`);
-    if (item.length > 200 || item.includes("\n")) throw new Error(`Invalid issue field: reporter.${key} must be one short line`);
-    return [key, item.trim()];
+    if (typeof item !== "string") throw new Error(`Missing issue field: reporter.${key}`);
+    if (item.length > 200 || /[\r\n]/.test(item)) throw new Error(`Invalid issue field: reporter.${key} must be one short line`);
+    // Validated after cleaning, so a value made only of markup characters cannot sign as blank.
+    const clean = item.replace(/[`<>]/g, "").trim();
+    if (!clean) throw new Error(`Missing issue field: reporter.${key}`);
+    return [key, clean];
   });
 }
 
@@ -165,7 +168,7 @@ function render(kind: Kind, fields: Fields, context: {
   }
   const evidence = field(fields, "evidence", false);
   const reporterLines = signed.map(([key, value]) =>
-    `- ${key === "agentId" ? "Agent ID" : key[0].toUpperCase() + key.slice(1)}: ${value.replace(/[`<>]/g, "")}`);
+    `- ${key === "agentId" ? "Agent ID" : key[0].toUpperCase() + key.slice(1)}: ${value}`);
   const body = ["## Reporter", reporterLines.join("\n"), ...(kind === "bug" ? [
     "## What went wrong", field(fields, "summary"),
     "## Impact", field(fields, "impact"),

@@ -112,11 +112,15 @@ function reporter(fields) {
     }
     return reporterFields.map(([key]) => {
         const item = value[key];
-        if (typeof item !== "string" || !item.trim())
+        if (typeof item !== "string")
             throw new Error(`Missing issue field: reporter.${key}`);
-        if (item.length > 200 || item.includes("\n"))
+        if (item.length > 200 || /[\r\n]/.test(item))
             throw new Error(`Invalid issue field: reporter.${key} must be one short line`);
-        return [key, item.trim()];
+        // Validated after cleaning, so a value made only of markup characters cannot sign as blank.
+        const clean = item.replace(/[`<>]/g, "").trim();
+        if (!clean)
+            throw new Error(`Missing issue field: reporter.${key}`);
+        return [key, clean];
     });
 }
 /** The checkout path without the home directory, which would publish the local user name. */
@@ -167,7 +171,7 @@ function render(kind, fields, context) {
         contextLines.push(`- Session: \`${context.session.id}\` (${context.session.fixture}, ${context.session.state}; checkout commit \`${context.session.commit ?? "unknown"}\`)`);
     }
     const evidence = field(fields, "evidence", false);
-    const reporterLines = signed.map(([key, value]) => `- ${key === "agentId" ? "Agent ID" : key[0].toUpperCase() + key.slice(1)}: ${value.replace(/[`<>]/g, "")}`);
+    const reporterLines = signed.map(([key, value]) => `- ${key === "agentId" ? "Agent ID" : key[0].toUpperCase() + key.slice(1)}: ${value}`);
     const body = ["## Reporter", reporterLines.join("\n"), ...(kind === "bug" ? [
             "## What went wrong", field(fields, "summary"),
             "## Impact", field(fields, "impact"),

@@ -6,7 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { linuxListenerOwned, linuxListenerPids } from "./linux-listener.js";
 import { applyOutboundPolicy, type OutboundPolicy } from "./outbound.js";
-import { birthOf, isSameProcess, listProcesses, processEntry, type ProcessEntry } from "./process-table.js";
+import { birthOf, compareBirth, isSameProcess, listProcesses, processEntry, type ProcessEntry } from "./process-table.js";
 import { runSync } from "./run-sync.js";
 import type { CommandSpec, OwnedProcess, ProcessIdentity, ServiceSpec } from "./types.js";
 
@@ -135,12 +135,14 @@ export function ownedListenerProcesses(record: OwnedProcess, port: number): Proc
   if (processAlive(record)) groups.unshift(record.pid);
   if (!groups.length) return [];
   const owned: ProcessIdentity[] = [];
-  const table = tableMap();
   for (const pid of listenerPids(port)) {
-    // Birth first, then ancestry, then the same birth again: a PID that exits and is reused while ancestry is
-    // checked would otherwise be recorded with the newcomer's birth and later pass signalProcess.
+    // Birth first, then ancestry from a table read after it, then the same birth again: a PID that exits and is
+    // reused around the ancestry check would otherwise be recorded with the newcomer's birth (or certified by a
+    // table read before the newcomer existed) and later pass signalProcess.
     const birth = birthOf(pid);
-    if (birth === null || !groups.some((pgid) => descendsFromGroup(pid, pgid, table))) continue;
+    if (birth === null) continue;
+    const table = tableMap();
+    if (!groups.some((pgid) => descendsFromGroup(pid, pgid, table))) continue;
     if (isSameProcess(pid, birth)) owned.push({ pid, birth });
   }
   return owned;
@@ -151,8 +153,10 @@ export function ownedListenerProcesses(record: OwnedProcess, port: number): Proc
  * "gone" means confirmed exited or reused; "failed" means it may still be the recorded process but was not signalled.
  */
 export function signalProcess(member: ProcessIdentity, signal: NodeJS.Signals): "signalled" | "gone" | "failed" {
-  // A process that exists but cannot be read may still be the recorded one; one that reads differently is not.
-  if (!isSameProcess(member.pid, member.birth)) return processEntry(member.pid) === null && processExists(member.pid) ? "failed" : "gone";
+  const identity = compareBirth(member.pid, member.birth);
+  if (identity === "different") return "gone";
+  // Its birth could not be read: gone if the PID no longer exists, otherwise it may still be the recorded process.
+  if (identity === "unknown") return processExists(member.pid) ? "failed" : "gone";
   try { process.kill(member.pid, signal); return "signalled"; }
   catch (error) { return (error as NodeJS.ErrnoException).code === "ESRCH" ? "gone" : "failed"; }
 }

@@ -3,6 +3,21 @@ import path from "node:path";
 import { runSync } from "./run-sync.js";
 const PROC_BIRTH = "proc:";
 const useProc = process.platform === "linux" && readableProc("/proc");
+// /proc start times count clock ticks since boot, and receipts outlive reboots, so a /proc birth also names the
+// boot: a process after a reboot never matches one recorded before it, even with the same PID and start tick.
+const bootId = useProc ? readBootId("/proc") : "";
+function readBootId(procRoot) {
+    try {
+        return readFileSync(path.join(procRoot, "sys", "kernel", "random", "boot_id"), "utf8").trim();
+    }
+    catch { /* Fall back to the boot time. */ }
+    try {
+        return `btime${/^btime (\d+)$/m.exec(readFileSync(path.join(procRoot, "stat"), "utf8"))?.[1] ?? ""}`;
+    }
+    catch {
+        return "unknown";
+    }
+}
 function readableProc(procRoot) {
     try {
         readFileSync(path.join(procRoot, "self", "stat"), "utf8");
@@ -36,7 +51,7 @@ function procEntry(pid, procRoot) {
 }
 function procBirth(pid, procRoot = "/proc") {
     const start = procStat(pid, procRoot)?.[19];
-    return start && /^\d+$/.test(start) ? `${PROC_BIRTH}${start}` : null;
+    return start && /^\d+$/.test(start) ? `${PROC_BIRTH}${bootId}:${start}` : null;
 }
 /** Every process in a procfs root; null when it cannot be read. Exported for linux-listener and its tests. */
 export function readProcTable(procRoot = "/proc") {
@@ -86,10 +101,19 @@ export function birthOf(pid) {
  * works.
  */
 export function isSameProcess(pid, recordedBirth) {
+    return compareBirth(pid, recordedBirth) === "same";
+}
+/**
+ * The tri-state behind isSameProcess, for callers that must tell a reused PID ("different") from a birth that
+ * could not be read ("unknown": the process is gone, or it exists but is unreadable and may still be the one).
+ */
+export function compareBirth(pid, recordedBirth) {
     if (!recordedBirth)
-        return false;
+        return "unknown";
     const current = recordedBirth.startsWith(PROC_BIRTH) ? procBirth(pid) : psBirth(pid);
-    return current !== null && current === recordedBirth;
+    if (current === null)
+        return "unknown";
+    return current === recordedBirth ? "same" : "different";
 }
 /** The whole process table, or null when it cannot be read (callers then fail safe). */
 export function listProcesses() {
