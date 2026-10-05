@@ -1,11 +1,16 @@
 import type { OutboundPolicy } from "./outbound.js";
-import { spawnService, waitForService } from "./process.js";
+import { spawnService, stopService, waitForService } from "./process.js";
 import type { OwnedProcess, ServiceSpec } from "./types.js";
 
-/** A spawned service: record `owned` in the receipt first, then wait for it with ready(). */
+/**
+ * A spawned service: record `owned` in the receipt first, then wait for it with ready(). If ready() fails, the
+ * caller either stops every recorded process (startup) or calls abandon() for this one alone (a kill's restart).
+ */
 export interface LaunchedService {
   owned: OwnedProcess;
   ready(ensureActive: () => Promise<void>): Promise<void>;
+  /** Stops this process group; false if its ownership could not be verified, so it must stay recorded. */
+  abandon(): Promise<boolean>;
 }
 
 /**
@@ -33,6 +38,12 @@ export async function launchService(spec: ServiceSpec, { root, sessionDir, ports
     owned,
     async ready(ensureActive) {
       for (const check of checks) await waitForService(child, spec, check.port, owned, ensureActive);
+    },
+    async abandon() {
+      const stopped = await stopService(owned);
+      // The supervisor handle would otherwise keep the calling command alive.
+      child.unref();
+      return stopped;
     },
   };
 }

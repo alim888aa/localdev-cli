@@ -1,9 +1,14 @@
 import type { OutboundPolicy } from "./outbound.js";
 import type { OwnedProcess, ServiceSpec } from "./types.js";
-/** A spawned service: record `owned` in the receipt first, then wait for it with ready(). */
+/**
+ * A spawned service: record `owned` in the receipt first, then wait for it with ready(). If ready() fails, the
+ * caller either stops every recorded process (startup) or calls abandon() for this one alone (a kill's restart).
+ */
 export interface LaunchedService {
     owned: OwnedProcess;
     ready(ensureActive: () => Promise<void>): Promise<void>;
+    /** Stops this process group; false if its ownership could not be verified, so it must stay recorded. */
+    abandon(): Promise<boolean>;
 }
 /**
  * The one way localdev starts a long-running process: startup's services, the fault proxy, and a service restarted

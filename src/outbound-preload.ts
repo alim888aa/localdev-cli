@@ -10,10 +10,15 @@ function refused(host: string): Error {
     { code: "ELOCALDEV_OUTBOUND" });
 }
 
+// Loopback by address, not spelling: BlockList parses each address, so 0::1 matches ::1, and IPv4-mapped IPv6
+// (::ffff:7f00:1, ::ffff:127.0.0.1) is checked against the IPv4 range.
+const loopback = new net.BlockList();
+loopback.addSubnet("127.0.0.0", 8, "ipv4");
+loopback.addAddress("::1", "ipv6");
+
 function isLoopback(address: string): boolean {
-  if (net.isIPv4(address)) return address.startsWith("127.");
-  const lower = address.toLowerCase();
-  return lower === "::1" || lower === "0:0:0:0:0:0:0:1" || lower.startsWith("::ffff:127.");
+  const family = net.isIP(address);
+  return family !== 0 && loopback.check(address, family === 4 ? "ipv4" : "ipv6");
 }
 
 type LookupCallback = (error: Error | null, address?: string | dns.LookupAddress[], family?: number) => void;
@@ -31,7 +36,7 @@ function loopbackLookup(lookup: Lookup): Lookup {
   });
 }
 
-type ConnectOptions = { path?: string; host?: string; port?: number | string; lookup?: Lookup };
+type ConnectOptions = { path?: string | null; host?: string; port?: number | string; lookup?: Lookup };
 const connect = net.Socket.prototype.connect as (this: net.Socket, ...args: unknown[]) => net.Socket;
 
 net.Socket.prototype.connect = function (this: net.Socket, ...args: unknown[]): net.Socket {
@@ -40,13 +45,15 @@ net.Socket.prototype.connect = function (this: net.Socket, ...args: unknown[]): 
   let options: ConnectOptions;
   if (Array.isArray(args[0])) options = args[0][0] as ConnectOptions;
   else if (typeof args[0] === "object" && args[0] !== null) options = args[0] as ConnectOptions;
-  else if (typeof args[0] === "string" && !/^\d+$/.test(args[0])) options = { path: args[0] };
+  // Node's own rule: a string that is not a number (" 80 " is one) names a pipe.
+  else if (typeof args[0] === "string" && !(Number(args[0]) >= 0)) options = { path: args[0] };
   else {
     options = { port: args[0] as number, host: typeof args[1] === "string" ? args[1] : undefined };
     const callback = args.find((item) => typeof item === "function");
     args = callback ? [options, callback] : [options];
   }
-  if (options.path === undefined) {
+  // Node itself treats any truthy path as IPC and anything else (undefined, null, "") as TCP; decide the same way.
+  if (!options.path) {
     const host = options.host || "localhost";
     if (net.isIP(host)) {
       if (!isLoopback(host)) {

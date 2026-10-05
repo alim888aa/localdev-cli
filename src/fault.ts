@@ -244,8 +244,12 @@ async function killService(id: string, portName: string): Promise<KillResult> {
       }
     });
   } catch (error) {
+    // The replacement stays recorded either way: stopped, status shows the service dead (degraded); if its
+    // ownership could not be verified, stop still finds and retries it.
+    const stopped = await launched.abandon();
     await dropKill();
-    throw new Error(`${record.name} did not come back after the kill: ${error instanceof Error ? error.message : String(error)}; log: ${launched.owned.log}`);
+    throw new Error(`${record.name} did not come back after the kill: ${error instanceof Error ? error.message : String(error)}; ` +
+      `${stopped ? "the replacement was stopped" : "the replacement could not be verified for stopping and stays in the session"}; log: ${launched.owned.log}`);
   }
   await dropKill(launched.owned);
   return {

@@ -4,6 +4,7 @@
 import http from "node:http";
 import net from "node:net";
 import { rmSync } from "node:fs";
+import { pipeline } from "node:stream";
 import type { ProxyControl, ProxyPortState, ProxyReply, ProxyRoute } from "./proxy.js";
 
 type Pending = { proceed: () => void; dropped: () => boolean };
@@ -71,21 +72,40 @@ function endToEnd(raw: string[]): string[] {
 
 const agent = new http.Agent({ keepAlive: true });
 
+/**
+ * Forwards one admitted HTTP request with a single paired cleanup: an abort, error or early close on either side
+ * tears down both. A truncated upstream answer cuts the client's response instead of leaving it waiting, and a
+ * client that goes away releases the upstream request.
+ */
+function forwardHttp(request: http.IncomingMessage, response: http.ServerResponse, target: number): void {
+  let ended = false;
+  const end = (error?: unknown) => {
+    if (ended || !error) return;
+    ended = true;
+    upstream.destroy();
+    // Before any answer the client sees a reset, as from a crashed service; after it, a cut-off response.
+    if (!response.headersSent) request.socket.resetAndDestroy();
+    else response.destroy();
+  };
+  const upstream = http.request({ host: "127.0.0.1", port: target, method: request.method, path: request.url,
+    headers: endToEnd(request.rawHeaders), agent }, (answer) => {
+    answer.on("error", end);
+    response.writeHead(answer.statusCode ?? 502, answer.statusMessage, endToEnd(answer.rawHeaders));
+    pipeline(answer, response, end);
+  });
+  // Kept for the whole exchange: the upstream socket can fail after the request body was sent.
+  upstream.on("error", end);
+  request.on("error", end);
+  response.once("close", () => { if (!response.writableFinished) end(new Error("the client closed the connection")); });
+  pipeline(request, upstream, end);
+}
+
 function serveHttp(state: PortState): net.Server {
   const { target } = state.route;
   // No request timeout: a held request waits as long as the fault holds it.
   const server = http.createServer({ requestTimeout: 0 }, (request, response) => {
     const dropped = () => response.destroyed || request.socket.destroyed;
-    admit(state, () => {
-      const upstream = http.request({ host: "127.0.0.1", port: target, method: request.method, path: request.url,
-        headers: endToEnd(request.rawHeaders), agent }, (answer) => {
-        response.writeHead(answer.statusCode ?? 502, answer.statusMessage, endToEnd(answer.rawHeaders));
-        answer.pipe(response);
-      });
-      // The service is gone (e.g. mid-kill): the client sees its connection reset, as with a crashed service.
-      upstream.once("error", () => { if (!response.headersSent) request.socket.resetAndDestroy(); else response.destroy(); });
-      request.pipe(upstream);
-    }, () => request.socket.resetAndDestroy(), dropped);
+    admit(state, () => forwardHttp(request, response, target), () => request.socket.resetAndDestroy(), dropped);
   });
   // Websocket upgrades (e.g. dev-server HMR) count as one request and are relayed raw once admitted.
   server.on("upgrade", (request: http.IncomingMessage, socket: net.Socket, head: Buffer) => {

@@ -368,6 +368,11 @@ test("--no-outbound blocks the app and its children from outside hosts while loo
     assert.equal(probe.httpProxy, "", "the adapter's proxy variable is cleared");
     assert.match(probe.nodeOptions, /--max-old-space-size=256 --import=file:/, "the adapter's NODE_OPTIONS are kept");
     assert.equal(await text(`${blocked.urls.app}/probe-child`), "ELOCALDEV_OUTBOUND", "a child process is blocked too");
+    const variants = JSON.parse(await text(`${blocked.urls.app}/probe-variants`));
+    assert.equal(variants.emptyPath, "ELOCALDEV_OUTBOUND", "an empty path is TCP, as Node treats it");
+    assert.equal(variants.nullPath, "ELOCALDEV_OUTBOUND", "a null path is TCP, as Node treats it");
+    assert.notEqual(variants.spelledV6Loopback, "ELOCALDEV_OUTBOUND", "0::1 is loopback");
+    assert.equal(variants.mappedLoopback, "connected", "an IPv4-mapped loopback address is loopback");
     await run("fault", blocked.id, "app", "--mode", "kill");
     assert.equal(JSON.parse(await text(`${blocked.urls.app}/probe`)).net, "ELOCALDEV_OUTBOUND", "a restarted service keeps the policy");
 
@@ -377,6 +382,49 @@ test("--no-outbound blocks the app and its children from outside hosts while loo
     assert.notEqual(unblocked.net, "ELOCALDEV_OUTBOUND");
     assert.equal(unblocked.httpProxy, "http://127.0.0.1:9");
     assert.notEqual(await text(`${open.urls.app}/probe-child`), "ELOCALDEV_OUTBOUND");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("a kill whose restart fails stops the replacement and leaves the session degraded, not leaking", async () => {
+  const { state, start, run, statusOf, cleanup } = await session("localdev-kill-fail-");
+  try {
+    const a = await start("--project", root, "--adapter", faultsAdapter);
+    await writeFile(path.join(a.dataDir, "api", "fail-on-start"), "");
+    await assert.rejects(run("fault", a.id, "proxied", "--mode", "kill"), /api did not come back after the kill: .*the replacement was stopped/);
+    const after = await statusOf(a.id);
+    assert.equal(after.state, "degraded");
+    assert.deepEqual(after.faults, []);
+    const api = processNamed(after, "api");
+    assert.notEqual(api.pid, processNamed(a, "api").pid, "the replacement is recorded");
+    assert.equal(api.alive, false);
+    assert.equal(groupAlive(api.pid), false, "the replacement's supervisor and guard are gone");
+    await run("stop", a.id);
+    const leftovers = execFileSync("ps", ["-eo", "stat=,args="], { encoding: "utf8" })
+      .split("\n").filter((line) => line.includes(state) && !line.trim().startsWith("Z"));
+    assert.deepEqual(leftovers, []);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("the proxy cuts a truncated answer short and releases the service when a client goes away", async () => {
+  const { start, cleanup } = await session("localdev-proxy-cleanup-");
+  try {
+    const a = await start("--project", root, "--adapter", faultsAdapter);
+    const truncated = await fetch(`${a.urls.api}/truncated`, { signal: AbortSignal.timeout(20_000) });
+    const error = await truncated.text().then(() => null, (failure) => failure);
+    assert.ok(error, "the client sees the cut-off body");
+    assert.notEqual(error.name, "TimeoutError", "the client is not left waiting");
+
+    const client = new AbortController();
+    const hanging = fetch(`${a.urls.api}/hang`, { signal: client.signal });
+    hanging.catch(() => undefined);
+    await waitUntil(async () => await text(`${a.urls.api}/hangs`) === "1");
+    client.abort();
+    await waitUntil(async () => await text(`${a.urls.api}/hangs`) === "0");
+    assert.equal(await text(`${a.urls.api}/echo/still`), "still", "the proxy keeps serving");
   } finally {
     await cleanup();
   }

@@ -1,4 +1,4 @@
-import { spawnService, waitForService } from "./process.js";
+import { spawnService, stopService, waitForService } from "./process.js";
 /**
  * The one way localdev starts a long-running process: startup's services, the fault proxy, and a service restarted
  * by `fault --mode kill`. Two phases, so a caller can spawn and record under the state lock and wait for
@@ -25,6 +25,12 @@ export async function launchService(spec, { root, sessionDir, ports, outbound })
         async ready(ensureActive) {
             for (const check of checks)
                 await waitForService(child, spec, check.port, owned, ensureActive);
+        },
+        async abandon() {
+            const stopped = await stopService(owned);
+            // The supervisor handle would otherwise keep the calling command alive.
+            child.unref();
+            return stopped;
         },
     };
 }
