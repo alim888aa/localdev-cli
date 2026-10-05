@@ -5,7 +5,7 @@ import http from "node:http";
 import net from "node:net";
 import { rmSync } from "node:fs";
 import { pipeline } from "node:stream";
-import type { ProxyControl, ProxyPortState, ProxyReply, ProxyRoute } from "./proxy.js";
+import { countUnit, type ProxyControl, type ProxyPortState, type ProxyReply, type ProxyRoute } from "./proxy.js";
 
 type Pending = { proceed: () => void; dropped: () => boolean };
 type PortState = {
@@ -54,7 +54,7 @@ function release(state: PortState, count: number): number {
 function view(state: PortState): ProxyPortState {
   state.held = state.held.filter((item) => !item.dropped());
   return {
-    port: state.route.port, unit: state.route.unit === "http" ? "request" : "connection", mode: state.mode,
+    port: state.route.port, unit: countUnit(state.route.unit), mode: state.mode,
     ...(state.ms === undefined ? {} : { ms: state.ms }), remaining: state.remaining, held: state.held.length,
     ...(state.since ? { since: state.since } : {}),
   };

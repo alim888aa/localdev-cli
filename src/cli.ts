@@ -10,7 +10,7 @@ import { issueCommand } from "./issue.js";
 import { activeFaults, applyFault, clearFaults, faultModes, isFaultMode, releaseHeld, resumeAllFaults, type FaultRequest } from "./fault.js";
 import { helpFor } from "./help.js";
 import { launchService } from "./launch.js";
-import { PROXY_NAME, proxySpec } from "./proxy.js";
+import { checkServiceName, countUnit, proxyLaunch } from "./proxy.js";
 import type { ProjectAdapter, ProxyUnit, ServiceSpec, SessionReceipt } from "./types.js";
 
 function usage(): never {
@@ -168,7 +168,7 @@ async function publicReceipt(receipt: SessionReceipt): Promise<object> {
     commit: receipt.commit,
     ports: receipt.ports,
     proxiedPorts: Object.fromEntries(Object.entries(receipt.proxyPorts ?? {})
-      .map(([name, unit]) => [name, unit === "http" ? "request" : "connection"])),
+      .map(([name, unit]) => [name, countUnit(unit)])),
     outbound: receipt.outbound === "deny" ? "blocked" : "allowed",
     urls: receipt.urls,
     dataDir: receipt.dataDir,
@@ -242,8 +242,8 @@ async function startup(args: string[]): Promise<void> {
     validateCleanupPaths(receipt.cleanupPaths, receipt.id, projectRoot);
     await writeReceipt(receipt);
     // The fault proxy starts first and holds the public ports of proxied names for the whole boot.
-    const proxy = proxySpec(receipt);
-    if (proxy) await launch(receipt, proxy, receipt.ports, undefined);
+    const proxy = proxyLaunch(receipt);
+    if (proxy) await launch(receipt, proxy.spec, { ports: proxy.ports, role: proxy.role });
     const plan = await adapter.createSession(context);
     if ("cleanupPaths" in plan) {
       throw new Error("Adapter cleanupPaths must be declared before createSession");
@@ -252,14 +252,14 @@ async function startup(args: string[]): Promise<void> {
     if (new Set(plan.services.map((item) => item.name)).size !== plan.services.length) {
       throw new Error("Service names must be unique");
     }
-    if (plan.services.some((item) => item.name === PROXY_NAME)) throw new Error(`Service name ${PROXY_NAME} is reserved for the fault proxy`);
+    for (const service of plan.services) checkServiceName(service.name);
     for (const service of plan.services) launchDescription(service.launchMode);
     receipt.urls = plan.urls ?? {};
     receipt.credentialsFile = plan.credentialsFile;
     // Kept (0600, never shown by status) so fault --mode kill can restart a service.
     receipt.services = plan.services;
     await writeReceipt(receipt);
-    for (const service of plan.services) await launch(receipt, service, context.bindPorts, receipt.outbound);
+    for (const service of plan.services) await launch(receipt, service, { ports: context.bindPorts, outbound: receipt.outbound });
     if (plan.seed) {
       await ensureStarting(receipt.id);
       const { owned, child, exitFile } = await spawnSeed(plan.seed, projectRoot, receipt.sessionDir, receipt.outbound);
@@ -298,11 +298,10 @@ async function startup(args: string[]): Promise<void> {
 }
 
 /** Start one long-running process for startup: record it before waiting, so stop can always find it. */
-async function launch(receipt: SessionReceipt, spec: ServiceSpec, ports: Record<string, number>,
-  outbound: SessionReceipt["outbound"]): Promise<void> {
+async function launch(receipt: SessionReceipt, spec: ServiceSpec,
+  options: Omit<Parameters<typeof launchService>[1], "root" | "sessionDir">): Promise<void> {
   await ensureStarting(receipt.id);
-  const launched = await launchService(spec, { root: receipt.projectRoot, sessionDir: receipt.sessionDir, ports, outbound });
-  if (spec.name === PROXY_NAME) launched.owned.role = "proxy";
+  const launched = await launchService(spec, { root: receipt.projectRoot, sessionDir: receipt.sessionDir, ...options });
   receipt.processes.push(launched.owned);
   await writeReceipt(receipt);
   await launched.ready(() => ensureStarting(receipt.id));

@@ -23,9 +23,9 @@ test("help works from a project with no adapter or GitHub access", async () => {
       [["help", "stop"], "localdev stop ID"],
       [["help", "fault"], "localdev fault ID PORT --mode pause"],
       [["fault", "--help"], "localdev fault ID --clear"],
-      [["issue", "--help"], "authenticated gh access"],
-      [["issue", "bug", "--help"], "JSON input requires: title, summary, expected, steps, impact"],
-      [["help", "issue", "request"], "JSON input requires: title, task, desired, whyShared, acceptance"],
+      [["issue", "--help"], "authenticated gh and a known CLI commit"],
+      [["issue", "bug", "--help"], "JSON input requires: reporter, title, summary, expected, steps, impact"],
+      [["help", "issue", "request"], "JSON input requires: reporter, title, task, desired, whyShared, acceptance"],
     ];
     for (const [args, expected] of cases) {
       const { stdout, stderr } = await exec(process.execPath, [cli, ...args], { cwd: project, env: { ...process.env, LOCAL_CLI_STATE_DIR: path.join(project, "state") } });
