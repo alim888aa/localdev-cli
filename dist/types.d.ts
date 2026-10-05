@@ -3,6 +3,12 @@ export interface ProjectAdapter {
     ports: string[];
     /** Fixture used by plain `localdev startup`. */
     defaultFixture?: string;
+    /**
+     * Ports to put behind the session's fault proxy, so `fault` can fail, slow or hold their traffic. "http" counts
+     * one HTTP request per fault use; "tcp" counts one accepted connection (postgres, gRPC). The proxy holds
+     * `ports[name]` and the service must bind `bindPorts[name]` on 127.0.0.1. See docs/adr/0001.
+     */
+    proxyPorts?: Record<string, ProxyUnit>;
     /** Pure, ID-scoped project paths to record before createSession can write files. */
     cleanupPaths?(context: SessionContext): string[];
     createSession(context: SessionContext): Promise<SessionPlan> | SessionPlan;
@@ -13,8 +19,12 @@ export interface SessionContext {
     projectRoot: string;
     sessionDir: string;
     dataDir: string;
+    /** Ports clients and URLs use. */
     ports: Record<string, number>;
+    /** Ports services listen on; differs from ports only for proxyPorts names. */
+    bindPorts: Record<string, number>;
 }
+export type ProxyUnit = "http" | "tcp";
 export interface CommandSpec {
     command: string;
     args?: string[];
@@ -42,8 +52,13 @@ export interface ProcessIdentity {
     pid: number;
     birth: string;
 }
-/** An active `localdev fault`: the session's own listener processes on one adapter port, frozen with SIGSTOP. */
-export interface FaultRecord {
+/**
+ * A fault that changes the session's processes, so stop and --clear must be able to undo or see it. Proxy faults
+ * (fail, slow, hold) live only in the fault proxy: stopping the proxy undoes them.
+ */
+export type FaultRecord = PauseFault | KillFault;
+/** An active pause: the session's own listener processes on one adapter port, frozen with SIGSTOP. */
+export interface PauseFault {
     /** Adapter port name, as in the receipt's ports. */
     port: string;
     mode: "pause";
@@ -52,8 +67,19 @@ export interface FaultRecord {
     sharedPorts: string[];
     since: string;
 }
+/** A kill in progress: the service was killed and is being restarted by the fault command that owns this record. */
+export interface KillFault {
+    port: string;
+    mode: "kill";
+    service: string;
+    /** The fault command doing the restart; a record whose owner has gone is reported as interrupted. */
+    owner: ProcessIdentity;
+    since: string;
+}
 export interface OwnedProcess {
     name: string;
+    /** The session's fault proxy; services have no role. */
+    role?: "proxy";
     launchMode?: string;
     pid: number;
     birth: string;
@@ -83,8 +109,13 @@ export interface SessionReceipt {
     sessionDir: string;
     dataDir: string;
     ports: Record<string, number>;
+    /** Missing in receipts from before the fault proxy; then services bind ports. */
+    bindPorts?: Record<string, number>;
+    proxyPorts?: Record<string, ProxyUnit>;
     urls: Record<string, string>;
     credentialsFile?: string;
+    /** The adapter's service specs, env included, so kill can restart one. Never shown by status. */
+    services?: ServiceSpec[];
     cleanupPaths?: string[];
     processes: OwnedProcess[];
     /** Recorded before any process is paused, so stop and --clear can always resume it. */

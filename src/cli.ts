@@ -4,15 +4,17 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { createInterface } from "node:readline/promises";
 import { pathToFileURL } from "node:url";
-import { birthOf, processAlive, processHealth, spawnSeed, spawnService, stopService, waitForSeed, waitForService } from "./process.js";
+import { birthOf, processAlive, processHealth, spawnSeed, stopService, waitForSeed } from "./process.js";
 import { listReceipts, readReceipt, reserveSession, sessionPath, withStateLock, writeReceipt } from "./state.js";
 import { issueCommand } from "./issue.js";
-import { clearFaults, isFaultMode, pauseService, resumeAllFaults } from "./fault.js";
+import { activeFaults, applyFault, clearFaults, faultModes, isFaultMode, releaseHeld, resumeAllFaults, type FaultRequest } from "./fault.js";
 import { helpFor } from "./help.js";
-import type { ProjectAdapter, SessionReceipt } from "./types.js";
+import { launchService } from "./launch.js";
+import { PROXY_NAME, proxySpec } from "./proxy.js";
+import type { ProjectAdapter, ProxyUnit, ServiceSpec, SessionReceipt } from "./types.js";
 
 function usage(): never {
-  throw new Error("Usage: localdev startup [fixture] [--project DIR] [--adapter FILE] [--replace [ID] | --parallel] | status [ID] | stop ID | fault ID [PORT] --mode pause|--clear | issue bug|request [--input FILE] [--project DIR] [--session ID] [--cli-ref SHA] [--submit]");
+  throw new Error("Usage: localdev startup [fixture] [--project DIR] [--adapter FILE] [--replace [ID] | --parallel] | status [ID] | stop ID | fault ID PORT --mode pause|fail|slow|hold|kill [--ms N] [--count N] | fault ID PORT --release [--count N] | fault ID [PORT] --clear | issue bug|request [--input FILE] [--project DIR] [--session ID] [--cli-ref SHA] [--submit]");
 }
 
 function option(args: string[], name: string): string | undefined {
@@ -145,6 +147,7 @@ async function publicReceipt(receipt: SessionReceipt): Promise<object> {
     const health = await processHealth(record);
     return {
       name: record.name,
+      ...(record.role ? { role: record.role } : {}),
       launchMode: record.launchMode ?? null,
       launch: launchDescription(record.launchMode),
       pid: record.pid,
@@ -156,6 +159,7 @@ async function publicReceipt(receipt: SessionReceipt): Promise<object> {
     };
   }));
   const degraded = receipt.state === "ready" && processes.some((item) => item.reachable === false || item.listenerOwned === false);
+  const { faults, proxy } = await activeFaults(receipt);
   return {
     id: receipt.id,
     state: degraded ? "degraded" : receipt.state,
@@ -163,12 +167,15 @@ async function publicReceipt(receipt: SessionReceipt): Promise<object> {
     checkout: receipt.projectRoot,
     commit: receipt.commit,
     ports: receipt.ports,
+    proxiedPorts: Object.fromEntries(Object.entries(receipt.proxyPorts ?? {})
+      .map(([name, unit]) => [name, unit === "http" ? "request" : "connection"])),
     urls: receipt.urls,
     dataDir: receipt.dataDir,
     credentialsFile: receipt.credentialsFile,
     logs: receipt.processes.map(({ name, log }) => ({ name, path: log })),
     processes,
-    faults: receipt.faults ?? [],
+    faults,
+    ...(proxy ? { proxy } : {}),
     error: receipt.error,
   };
 }
@@ -182,6 +189,7 @@ async function startup(args: string[]): Promise<void> {
   if (!adapter || !Array.isArray(adapter.ports) || typeof adapter.createSession !== "function") {
     throw new Error(`Invalid adapter: ${adapterPath}`);
   }
+  const proxyPorts = adapterProxyPorts(adapter, adapterPath);
   const fixture = requestedFixture ?? adapter.defaultFixture;
   if (!fixture || typeof fixture !== "string" || !fixture.trim()) {
     throw new Error(`No fixture named. Set defaultFixture in ${adapterPath} or run localdev startup <fixture>`);
@@ -192,9 +200,10 @@ async function startup(args: string[]): Promise<void> {
   let receipt: SessionReceipt;
   for (;;) {
     try {
-      receipt = await reserveSession(adapter.ports, (id, dir, ports) => ({
+      receipt = await reserveSession(adapter.ports, (id, dir, ports, bindPorts) => ({
         id, fixture, projectRoot, commit: gitCommit(projectRoot), adapterPath,
         sessionDir: dir, dataDir: path.join(dir, "data"), ports,
+        ...(Object.keys(proxyPorts).length ? { bindPorts, proxyPorts } : {}),
         urls: {}, processes: [], state: "starting", ownerPid: process.pid, ownerBirth,
         createdAt: new Date().toISOString(),
       }), async (receipts) => {
@@ -214,7 +223,7 @@ async function startup(args: string[]): Promise<void> {
         // beforeAllocate already holds the allocation lock.
         const stopping = await markStopping(selected.id);
         if (stopping) await stopReceipt(stopping);
-      });
+      }, Object.keys(proxyPorts));
       break;
     } catch (error) {
       if (!(error instanceof DuplicateSessionError) || !process.stdin.isTTY || choice.parallel || choice.replace) throw error;
@@ -225,10 +234,14 @@ async function startup(args: string[]): Promise<void> {
     const context = {
       id: receipt.id, fixture, projectRoot,
       sessionDir: receipt.sessionDir, dataDir: receipt.dataDir, ports: receipt.ports,
+      bindPorts: receipt.bindPorts ?? receipt.ports,
     };
     receipt.cleanupPaths = adapter.cleanupPaths?.(context) ?? [];
     validateCleanupPaths(receipt.cleanupPaths, receipt.id, projectRoot);
     await writeReceipt(receipt);
+    // The fault proxy starts first and holds the public ports of proxied names for the whole boot.
+    const proxy = proxySpec(receipt);
+    if (proxy) await launch(receipt, proxy, receipt.ports);
     const plan = await adapter.createSession(context);
     if ("cleanupPaths" in plan) {
       throw new Error("Adapter cleanupPaths must be declared before createSession");
@@ -237,28 +250,14 @@ async function startup(args: string[]): Promise<void> {
     if (new Set(plan.services.map((item) => item.name)).size !== plan.services.length) {
       throw new Error("Service names must be unique");
     }
+    if (plan.services.some((item) => item.name === PROXY_NAME)) throw new Error(`Service name ${PROXY_NAME} is reserved for the fault proxy`);
     for (const service of plan.services) launchDescription(service.launchMode);
     receipt.urls = plan.urls ?? {};
     receipt.credentialsFile = plan.credentialsFile;
+    // Kept (0600, never shown by status) so fault --mode kill can restart a service.
+    receipt.services = plan.services;
     await writeReceipt(receipt);
-    for (const service of plan.services) {
-      await ensureStarting(receipt.id);
-      const names = service.readyPorts ?? (service.readyPort ? [service.readyPort] : []);
-      if (!names.length) throw new Error(`Service ${service.name} has no readiness ports`);
-      const checks = names.map((name) => {
-        const port = receipt.ports[name];
-        if (!port) throw new Error(`Unknown readyPort: ${name}`);
-        return { name, port, host: service.readyHost ?? "127.0.0.1" };
-      });
-      const { owned, child } = await spawnService(service, projectRoot, receipt.sessionDir);
-      owned.launchMode = service.launchMode;
-      owned.readyPort = checks[0].port;
-      owned.readyHost = checks[0].host;
-      owned.readyChecks = checks;
-      receipt.processes.push(owned);
-      await writeReceipt(receipt);
-      for (const check of checks) await waitForService(child, service, check.port, owned, () => ensureStarting(receipt.id));
-    }
+    for (const service of plan.services) await launch(receipt, service, context.bindPorts);
     if (plan.seed) {
       await ensureStarting(receipt.id);
       const { owned, child, exitFile } = await spawnSeed(plan.seed, projectRoot, receipt.sessionDir);
@@ -296,6 +295,26 @@ async function startup(args: string[]): Promise<void> {
   }
 }
 
+/** Start one long-running process for startup: record it before waiting, so stop can always find it. */
+async function launch(receipt: SessionReceipt, spec: ServiceSpec, ports: Record<string, number>): Promise<void> {
+  await ensureStarting(receipt.id);
+  const launched = await launchService(spec, { root: receipt.projectRoot, sessionDir: receipt.sessionDir, ports });
+  if (spec.name === PROXY_NAME) launched.owned.role = "proxy";
+  receipt.processes.push(launched.owned);
+  await writeReceipt(receipt);
+  await launched.ready(() => ensureStarting(receipt.id));
+}
+
+function adapterProxyPorts(adapter: ProjectAdapter, adapterPath: string): Record<string, ProxyUnit> {
+  const declared = adapter.proxyPorts ?? {};
+  if (typeof declared !== "object" || Array.isArray(declared)) throw new Error(`Invalid adapter proxyPorts: ${adapterPath}`);
+  for (const [name, unit] of Object.entries(declared)) {
+    if (!adapter.ports.includes(name)) throw new Error(`Adapter proxyPorts names unknown port ${name}; declare it in ports too`);
+    if (unit !== "http" && unit !== "tcp") throw new Error(`Adapter proxyPorts.${name} must be "http" or "tcp"`);
+  }
+  return declared;
+}
+
 async function status(id?: string): Promise<void> {
   if (id) {
     let receipt: SessionReceipt;
@@ -323,28 +342,47 @@ async function stop(id?: string): Promise<void> {
   console.log(JSON.stringify({ id, stopped: true }));
 }
 
+function wholeNumber(args: string[], name: string, max = Number.MAX_SAFE_INTEGER): number | undefined {
+  const raw = option(args, name);
+  if (raw === undefined) return undefined;
+  const value = Number(raw);
+  if (!/^\d+$/.test(raw) || value < 1 || value > max) {
+    throw new Error(name === "--ms" ? "--ms must be a whole number from 1 to 600000" : `${name} must be a positive whole number`);
+  }
+  return value;
+}
+
 async function fault(args: string[]): Promise<void> {
   const [id, second] = args;
   if (!id || id.startsWith("--")) usage();
   const portName = second && !second.startsWith("--") ? second : undefined;
   const mode = option(args, "--mode");
+  const release = args.includes("--release");
   const clear = args.includes("--clear");
-  if (Boolean(mode) === clear) throw new Error("Choose either --mode pause or --clear");
-  if (mode && !portName) throw new Error("Name the port to fault, e.g. localdev fault <id> dataconnect --mode pause");
-  if (mode && !isFaultMode(mode)) throw new Error(`Unsupported fault mode ${mode}; supported: pause`);
-  // Read, signal and write under the lock, so a concurrent fault or stop cannot drop this fault's record.
-  const result = await withStateLock(async () => {
-    let receipt: SessionReceipt;
-    try { receipt = await readReceipt(id); }
-    catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") throw new Error(`No session ${id}; it is unknown or already stopped`);
-      throw error;
-    }
-    return clear
-      ? { id, cleared: await clearFaults(receipt, portName) }
-      : { id, fault: await pauseService(receipt, portName!) };
-  });
-  console.log(JSON.stringify(result, null, 2));
+  if ([Boolean(mode), release, clear].filter(Boolean).length !== 1) throw new Error("Choose one of --mode, --release or --clear");
+  const ms = wholeNumber(args, "--ms", 600_000);
+  const count = wholeNumber(args, "--count");
+  if (clear) {
+    if (count !== undefined || ms !== undefined) throw new Error("--clear takes no --ms or --count");
+    console.log(JSON.stringify({ id, cleared: await clearFaults(id, portName) }, null, 2));
+    return;
+  }
+  if (release) {
+    if (!portName) throw new Error("Name the port whose held requests to release, e.g. localdev fault <id> api --release");
+    if (ms !== undefined) throw new Error("--ms applies only to --mode slow");
+    console.log(JSON.stringify({ id, ...(await releaseHeld(id, portName, count)) }, null, 2));
+    return;
+  }
+  if (!portName) throw new Error("Name the port to fault, e.g. localdev fault <id> dataconnect --mode pause");
+  if (!isFaultMode(mode!)) throw new Error(`Unsupported fault mode ${mode}; supported: ${faultModes.join(", ")}`);
+  if (mode === "slow" && ms === undefined) throw new Error("--mode slow needs --ms <milliseconds>, e.g. --ms 3000");
+  if (mode !== "slow" && ms !== undefined) throw new Error("--ms applies only to --mode slow");
+  if ((mode === "pause" || mode === "kill") && count !== undefined) {
+    throw new Error("--count applies to fail, slow and hold, which count requests through the fault proxy; pause and kill act on the process at once");
+  }
+  const request: FaultRequest = mode === "slow" ? { mode, port: portName, ms: ms!, count }
+    : mode === "fail" || mode === "hold" ? { mode, port: portName, count } : { mode, port: portName };
+  console.log(JSON.stringify({ id, fault: await applyFault(id, request) }, null, 2));
 }
 
 /**

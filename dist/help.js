@@ -5,7 +5,8 @@ Usage:
   localdev startup [fixture] [--project DIR] [--adapter FILE] [--replace [ID] | --parallel]
   localdev status [ID]
   localdev stop ID
-  localdev fault ID PORT --mode pause
+  localdev fault ID PORT --mode pause|fail|slow|hold|kill [--ms N] [--count N]
+  localdev fault ID PORT --release [--count N]
   localdev fault ID [PORT] --clear
   localdev issue bug|request [options]
   localdev help [command]
@@ -54,7 +55,10 @@ Usage: localdev status [ID]
 
 The JSON includes checkout commit, URLs, ports, logs, and process health.
 A degraded session may have a dead server or a port owned by another process.
-Services paused with localdev fault are listed under faults. A paused service
+Active localdev faults are listed under faults, with their unit and remaining
+count; proxiedPorts names the ports fail, slow and hold work on, and proxy:
+"unreachable" means the fault proxy died (its faults are gone, the session is
+degraded). A paused service
 still accepts TCP connections, so its process shows reachable: true; check
 faults, not reachable, to see what is frozen.`,
     stop: `Stop and clean up one localdev session.
@@ -71,21 +75,39 @@ Example:
     fault: `Make one service of a session fail on purpose, then restore it.
 
 Usage:
-  localdev fault ID PORT --mode pause   Freeze the service listening on PORT.
-  localdev fault ID PORT --clear        Resume that service.
-  localdev fault ID --clear             Resume every paused service.
+  localdev fault ID PORT --mode pause            Freeze the service listening on PORT.
+  localdev fault ID PORT --mode kill             Kill it like a crash; it restarts with its data.
+  localdev fault ID PORT --mode fail [--count N] Reset requests, like an outage.
+  localdev fault ID PORT --mode slow --ms N [--count N]  Delay each request by N ms.
+  localdev fault ID PORT --mode hold [--count N] Park requests until released.
+  localdev fault ID PORT --release [--count N]   Let held requests through, oldest first.
+  localdev fault ID PORT --clear                 End PORT's fault; held requests go on.
+  localdev fault ID --clear                      End every fault.
 
 PORT is a port name from the session's receipt, such as app or dataconnect.
-pause freezes only the session's own process listening on that port, so
-clients connect but get no response and time out. The service keeps its data;
-other services keep running. A process serving several ports freezes all of
-them; the fault's sharedPorts lists them. status shows active faults (a paused
-service still reads reachable: true), and stop resumes and stops paused
-services. Only pause is supported.
+
+pause and kill act on the session's own process listening on PORT and work on
+any port. pause freezes it: clients connect but get no response, and it keeps
+its data. kill sends SIGKILL, starts it again from the session's recorded
+command, and returns once it is ready; files under the session's data dir
+survive, in-memory state does not. A process serving several ports is paused
+or killed with all of them; the fault's sharedPorts lists them.
+
+fail, slow and hold work on ports the project's adapter puts behind the
+session's fault proxy (status lists them under proxiedPorts). They count
+requests on HTTP ports and connections on TCP ports; status shows the unit and
+the remaining count. With --count N a fault applies to the next N, then clears
+itself (requests it holds stay held until released). Without it, the fault
+lasts until --clear.
+
+stop ends every fault, resumes paused services and drops held requests.
 
 Examples:
-  localdev fault <session-id> dataconnect --mode pause
-  localdev fault <session-id> dataconnect --clear`,
+  localdev fault <session-id> api --mode slow --ms 3000
+  localdev fault <session-id> api --mode hold
+  localdev fault <session-id> api --release --count 1
+  localdev fault <session-id> dataconnect --mode kill
+  localdev fault <session-id> --clear`,
     issue: `Draft or publish a standard issue for the shared localdev CLI.
 
 Usage:

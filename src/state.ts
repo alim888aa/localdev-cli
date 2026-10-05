@@ -134,11 +134,15 @@ export async function withStateLock<T>(fn: () => Promise<T>): Promise<T> {
   try { return await fn(); } finally { await release(); }
 }
 
-/** Reserve a complete port set before another CLI invocation can allocate one. */
+/**
+ * Reserve a complete port set before another CLI invocation can allocate one. Each name in bindNames also gets a
+ * private bind port (always from the random range); the others bind their public port.
+ */
 export async function reserveSession(
   names: string[],
-  makeReceipt: (id: string, dir: string, ports: Record<string, number>) => SessionReceipt,
+  makeReceipt: (id: string, dir: string, ports: Record<string, number>, bindPorts: Record<string, number>) => SessionReceipt,
   beforeAllocate?: (receipts: SessionReceipt[]) => Promise<void>,
+  bindNames: string[] = [],
 ): Promise<SessionReceipt> {
   if (names.length === 0 || new Set(names).size !== names.length) {
     throw new Error("Adapter must declare unique port names");
@@ -148,15 +152,17 @@ export async function reserveSession(
     if (beforeAllocate) await beforeAllocate(await listReceipts());
     const used = new Set((await listReceipts())
       .filter((item) => item.state === "starting" || item.state === "ready" || item.state === "stopping")
-      .flatMap((item) => Object.values(item.ports)));
+      .flatMap((item) => [...Object.values(item.ports), ...Object.values(item.bindPorts ?? {})]));
     const ports: Record<string, number> = {};
-    for (const name of names) {
+    const bindPorts: Record<string, number> = {};
+    for (const [index, name] of [...names, ...bindNames].entries()) {
+      const into = index < names.length ? ports : bindPorts;
       let found = false;
       // App URLs stay predictable across worktrees; emulator ports remain isolated.
-      if (name === "web" || name === "app") {
+      if (into === ports && (name === "web" || name === "app")) {
         for (let candidate = 3000; candidate <= 3010; candidate++) {
           if (used.has(candidate) || !(await canBind(candidate))) continue;
-          ports[name] = candidate;
+          into[name] = candidate;
           used.add(candidate);
           found = true;
           break;
@@ -165,7 +171,7 @@ export async function reserveSession(
       for (let attempt = 0; !found && attempt < 1000; attempt++) {
         const candidate = randomInt(20_000, 60_000);
         if (used.has(candidate) || !(await canBind(candidate))) continue;
-        ports[name] = candidate;
+        into[name] = candidate;
         used.add(candidate);
         found = true;
         break;
@@ -175,7 +181,7 @@ export async function reserveSession(
     const id = randomUUID();
     const dir = sessionPath(id);
     await fs.mkdir(path.join(dir, "data"), { recursive: true, mode: 0o700 });
-    const receipt = makeReceipt(id, dir, ports);
+    const receipt = makeReceipt(id, dir, ports, { ...ports, ...bindPorts });
     await writeReceipt(receipt);
     return receipt;
   } finally {

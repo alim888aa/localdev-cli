@@ -351,9 +351,10 @@ export async function waitForSeed(child, exitFile, timeoutMs = 300_000, ensureAc
 }
 /**
  * Stop the owned process group, including children left by an exited launcher and descendants that
- * moved into their own groups. Returns false unless every owned group is verified gone.
+ * moved into their own groups. Returns false unless every owned group is verified gone. `hard` sends SIGKILL at
+ * once, like a crash, for `fault --mode kill`.
  */
-export async function stopService(record) {
+export async function stopService(record, { hard = false } = {}) {
     const mainAlive = groupExists(record.pid);
     if (mainAlive && !isOwned(record) && !guardOwnsGroup(record))
         return false;
@@ -374,6 +375,13 @@ export async function stopService(record) {
     for (const pgid of targets) {
         if (!stillOwned(pgid))
             continue;
+        if (hard) {
+            try {
+                process.kill(-pgid, "SIGKILL");
+            }
+            catch { /* Already exited. */ }
+            continue;
+        }
         try {
             process.kill(-pgid, "SIGTERM");
         }
@@ -388,7 +396,7 @@ export async function stopService(record) {
         }
     }
     const remaining = () => targets.filter(groupExists);
-    const deadline = Date.now() + 4_000;
+    const deadline = Date.now() + (hard ? 0 : 4_000);
     while (Date.now() < deadline && remaining().length) {
         await new Promise((resolve) => setTimeout(resolve, 100));
     }

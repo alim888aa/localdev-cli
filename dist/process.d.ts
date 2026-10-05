@@ -28,9 +28,12 @@ export declare function waitForService(child: ChildProcess, spec: ServiceSpec, p
 export declare function waitForSeed(child: ChildProcess, exitFile: string, timeoutMs?: number, ensureActive?: () => Promise<void>): Promise<void>;
 /**
  * Stop the owned process group, including children left by an exited launcher and descendants that
- * moved into their own groups. Returns false unless every owned group is verified gone.
+ * moved into their own groups. Returns false unless every owned group is verified gone. `hard` sends SIGKILL at
+ * once, like a crash, for `fault --mode kill`.
  */
-export declare function stopService(record: OwnedProcess): Promise<boolean>;
+export declare function stopService(record: OwnedProcess, { hard }?: {
+    hard?: boolean;
+}): Promise<boolean>;
 /** The owned group still has a live (non-zombie) member and its identity checks out. */
 export declare function processAlive(record: OwnedProcess): boolean;
 export declare function processHealth(record: OwnedProcess): Promise<{

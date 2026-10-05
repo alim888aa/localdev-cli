@@ -485,7 +485,7 @@ test("fault pause freezes one session's service until cleared and leaves another
     await assert.rejects(run("fault", first.id, "app", "--mode", "pause"), /already paused/);
     await assert.rejects(run("fault", first.id, "nope", "--mode", "pause"), /Unknown port nope/);
     await assert.rejects(run("fault", first.id, "app", "--mode", "reject"), /Unsupported fault mode reject/);
-    await assert.rejects(run("fault", first.id, "app", "--mode", "pause", "--clear"), /Choose either/);
+    await assert.rejects(run("fault", first.id, "app", "--mode", "pause", "--clear"), /Choose one of --mode, --release or --clear/);
     await assert.rejects(run("fault", "00000000-0000-4000-8000-000000000000", "app", "--mode", "pause"), /No session/);
     // The fixture declares a secondary port that nothing listens on in the base fixture.
     await assert.rejects(run("fault", first.id, "secondary", "--mode", "pause"), /No listener owned/);
