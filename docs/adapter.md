@@ -64,10 +64,84 @@ does not guess which framework or Firebase services a project uses.
 
 ## Faults
 
-`localdev fault <id> <port> --mode pause` freezes the process listening on one
-declared port. If verifiers need to fail one service alone, run it as its own
-process on its own port; services sharing a process freeze together. The adapter
-needs no extra declaration.
+`localdev fault` needs nothing from the adapter for `pause` and `kill`. They act
+on the session's process listening on a declared port. If verifiers need to
+fail one service alone, run it as its own process on its own port. Services
+sharing a process (such as a Firebase emulator hub) are paused or killed
+together.
+
+**kill and restart.** `kill` restarts the service from the spec `createSession`
+returned, using the spec's `env` over the environment of the shell running
+`localdev fault`, not the one that ran `startup`. Put everything a restart
+needs (PATH additions, JAVA_HOME, emulator flags) in the spec's `env` or `args`.
+Only state under `context.dataDir` survives a kill. An emulator that keeps data
+in memory comes back empty unless it imports from and exports to `dataDir`.
+
+**fail, slow and hold** need the port behind the session's fault proxy. Opt
+ports in with `proxyPorts`, and bind those services on `context.bindPorts`:
+
+```js
+export default {
+  ports: ["web", "api", "postgres"],
+  proxyPorts: { api: "http", postgres: "tcp" },
+  createSession({ ports, bindPorts }) {
+    return {
+      services: [
+        // The service listens on its bind port; the proxy holds ports.api.
+        { name: "api", command: "node", args: ["server.js", "--port", String(bindPorts.api)], readyPort: "api" },
+        // ...
+      ],
+      // Clients, URLs and other services keep using ports.
+      urls: { app: `http://127.0.0.1:${ports.web}`, api: `http://127.0.0.1:${ports.api}` },
+    };
+  },
+};
+```
+
+- **One port, two numbers.** `context.ports[name]` is the public port, held by
+  the proxy. `context.bindPorts[name]` is the port the service listens on. For
+  names not in `proxyPorts`, the two are the same, so existing adapters work
+  unchanged. The proxy starts before your services and forwards traffic
+  untouched until a fault is set.
+- **Bind on 127.0.0.1.** The proxy forwards to `127.0.0.1:<bindPort>`, so the
+  service must listen there. Readiness checks use the bind port.
+- **Pick the unit.** Use `"http"` for HTTP/1.1 servers, where a fault counts
+  requests and websocket upgrades. Use `"tcp"` for anything else (postgres,
+  gRPC/h2c such as the Firestore SDK port), where it counts connections.
+- **Only opt in ports whose clients you point at `ports`.** Ports a service
+  both binds and advertises from one setting can't be split, such as Firebase's
+  hub, UI, websocket and Data Connect postgres ports. Leave those out. Clients
+  that discover a service through the Firebase hub get its bind port and bypass
+  the proxy, so faults reach only clients configured with `ports`. See
+  [ADR 0001](adr/0001-fault-proxy-opt-in-ports.md).
+
+## No outbound
+
+`localdev startup --no-outbound` runs every service and the seed under a deny
+policy. It is applied after the adapter's `env`, so an adapter can't undo it:
+
+- `NODE_OPTIONS` gains `--import=<localdev's outbound preload>`. In every Node
+  process, including Node children such as Next workers, that preload refuses
+  TCP connections to non-loopback addresses with `ELOCALDEV_OUTBOUND`.
+  Hostnames are resolved first, so names that point at loopback still work.
+- `HTTP(S)_PROXY`, `ALL_PROXY` and their lowercase forms are set to empty, and
+  `NODE_USE_ENV_PROXY` is removed, so nothing tunnels out through an egress
+  proxy (Codex cloud sets one).
+
+Limits:
+
+- **Non-Node processes aren't enforced on a Mac.** That covers Java (the
+  Firestore emulator), Go (Data Connect) and postgres. In Codex cloud,
+  clearing the proxy variables usually cuts them off as well.
+- **DNS lookups still happen.** UDP isn't covered, and any loopback
+  destination is allowed. This is a guard against accidental calls, not a
+  sandbox.
+- **First-run downloads fail.** Warm caches without the flag first, for
+  example Firebase emulator jars and `next/font/google`.
+- **Next rewrites `NODE_OPTIONS` for its workers.** It keeps flags it doesn't
+  own, but check your framework keeps `--import`.
+- **The flag survives restarts.** It applies to services restarted by
+  `fault --mode kill`.
 
 ## Cross-project isolation
 

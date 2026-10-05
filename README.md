@@ -36,24 +36,57 @@ in 20000–59999. Emulator and other named ports keep their independent allocati
 See [the adapter guide](docs/adapter.md) when adding another project. For local
 CLI development, run `pnpm install`, `pnpm build`, and `pnpm test` here.
 
+## Keep a session offline
+
+`localdev startup --no-outbound` stops the app, its workers and the seed from
+reaching outside hosts, so local tests never call paid AI providers or real
+services. Loopback traffic, including emulators and the session's other
+services, still works. Blocked calls fail fast with `ELOCALDEV_OUTBOUND`, and
+`status` shows `outbound: "blocked"`. It covers Node processes. See
+[the adapter guide](docs/adapter.md#no-outbound) for its limits.
+
 ## Fail a service on purpose
 
-Verifiers can make one service of a session hang, then restore it:
+Verifiers and edge case hunters can make one service of a session misbehave,
+then restore it, without writing their own harness:
 
 ```sh
-localdev fault <session-id> dataconnect --mode pause   # freeze that service
-localdev fault <session-id> dataconnect --clear        # resume it
-localdev fault <session-id> --clear                    # resume every paused service
+localdev fault <id> api --mode fail              # reset every request, like an outage
+localdev fault <id> api --mode fail --count 1    # only the next request
+localdev fault <id> api --mode slow --ms 3000    # delay every request by 3 s
+localdev fault <id> api --mode hold              # park requests...
+localdev fault <id> api --release --count 1      # ...and let them through one at a time, oldest first
+localdev fault <id> dataconnect --mode pause     # freeze the process (SIGSTOP)
+localdev fault <id> dataconnect --mode kill      # kill it like a crash; it restarts with its data
+localdev fault <id> api --clear                  # end that port's fault (held requests go on)
+localdev fault <id> --clear                      # end every fault
 ```
 
-The port name comes from the session's `ports`. `pause` sends SIGSTOP to the
-session's own process listening on that port, after checking it belongs to the
-session's process groups. Clients still connect but get no response and time out;
-the service keeps its data and other services keep running. A process that serves
-several ports freezes all of them, listed in the fault's `sharedPorts`. `status`
-lists active faults under `faults`. A paused service still accepts TCP
-connections, so its process keeps `reachable: true`; read `faults` to see what is
-frozen. `stop` resumes paused services before stopping them. Only `pause` exists today; refusing or slowing requests does not.
+For example, to check a double submit during a slow save: `--mode slow --ms 3000`
+on the backend, click Save twice in the browser, then `--clear`.
+
+The port name comes from the session's `ports`.
+
+- **pause and kill** work on any port. They act on the session's own process
+  listening there, after checking it belongs to the session's process groups.
+  `pause` freezes it: clients connect but time out, and it keeps its state.
+  `kill` sends SIGKILL, starts it again from its recorded command, and returns
+  once it is ready. Files under the session's data dir survive; in-memory state
+  does not. A process serving several ports is paused or killed with all of
+  them (`sharedPorts`).
+- **fail, slow and hold** need the port behind the session's fault proxy, which
+  the project's adapter opts in with `proxyPorts` (see
+  [the adapter guide](docs/adapter.md#faults) and
+  [ADR 0001](docs/adr/0001-fault-proxy-opt-in-ports.md)). `status` lists these
+  ports under `proxiedPorts`. An HTTP port counts requests and a TCP port
+  (postgres, gRPC) counts connections. `--count N` limits a fault to the next N;
+  without it, the fault lasts until `--clear`.
+
+`status` lists every active fault under `faults` with its `unit` and `remaining`
+count, plus `held` for hold. A paused service still accepts TCP connections, so
+its process keeps `reachable: true`; read `faults` to see what is frozen. `stop`
+ends every fault: it resumes paused services, drops held requests and stops the
+proxy with the session.
 
 ## File an issue
 

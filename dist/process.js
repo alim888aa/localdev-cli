@@ -5,6 +5,7 @@ import net from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { linuxListenerOwned, linuxListenerPids } from "./linux-listener.js";
+import { applyOutboundPolicy } from "./outbound.js";
 const supervisorPath = fileURLToPath(new URL("./supervisor.js", import.meta.url));
 export function birthOf(pid) {
     try {
@@ -232,7 +233,7 @@ function portOpen(host, port) {
     });
 }
 /** A persistent supervisor keeps the process group identifiable if a launcher exits. */
-async function spawnManaged(name, spec, root, sessionDir) {
+async function spawnManaged(name, spec, root, sessionDir, outbound) {
     const token = randomUUID();
     const log = path.join(sessionDir, `${name}.log`);
     const configFile = path.join(sessionDir, `${token}.command.json`);
@@ -242,7 +243,7 @@ async function spawnManaged(name, spec, root, sessionDir) {
         command: spec.command,
         args: spec.args ?? [],
         cwd: spec.cwd ?? root,
-        env: { ...process.env, ...spec.env },
+        env: applyOutboundPolicy({ ...process.env, ...spec.env }, outbound),
         exitFile,
         guardFile,
     }), { mode: 0o600 });
@@ -291,11 +292,11 @@ async function spawnManaged(name, spec, root, sessionDir) {
         throw error;
     }
 }
-export function spawnService(spec, root, dir) {
-    return spawnManaged(spec.name, spec, root, dir);
+export function spawnService(spec, root, dir, outbound) {
+    return spawnManaged(spec.name, spec, root, dir, outbound);
 }
-export function spawnSeed(spec, root, dir) {
-    return spawnManaged("seed", spec, root, dir);
+export function spawnSeed(spec, root, dir, outbound) {
+    return spawnManaged("seed", spec, root, dir, outbound);
 }
 export async function waitForService(child, spec, port, record, ensureActive) {
     const deadline = Date.now() + (spec.readyTimeoutMs ?? 60_000);
@@ -351,9 +352,10 @@ export async function waitForSeed(child, exitFile, timeoutMs = 300_000, ensureAc
 }
 /**
  * Stop the owned process group, including children left by an exited launcher and descendants that
- * moved into their own groups. Returns false unless every owned group is verified gone.
+ * moved into their own groups. Returns false unless every owned group is verified gone. `hard` sends SIGKILL at
+ * once, like a crash, for `fault --mode kill`.
  */
-export async function stopService(record) {
+export async function stopService(record, { hard = false } = {}) {
     const mainAlive = groupExists(record.pid);
     if (mainAlive && !isOwned(record) && !guardOwnsGroup(record))
         return false;
@@ -374,6 +376,13 @@ export async function stopService(record) {
     for (const pgid of targets) {
         if (!stillOwned(pgid))
             continue;
+        if (hard) {
+            try {
+                process.kill(-pgid, "SIGKILL");
+            }
+            catch { /* Already exited. */ }
+            continue;
+        }
         try {
             process.kill(-pgid, "SIGTERM");
         }
@@ -388,7 +397,7 @@ export async function stopService(record) {
         }
     }
     const remaining = () => targets.filter(groupExists);
-    const deadline = Date.now() + 4_000;
+    const deadline = Date.now() + (hard ? 0 : 4_000);
     while (Date.now() < deadline && remaining().length) {
         await new Promise((resolve) => setTimeout(resolve, 100));
     }

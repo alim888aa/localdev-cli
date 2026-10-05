@@ -11,5 +11,8 @@ export declare const lockPort: number;
  * inside reserveSession's beforeAllocate holds the lock and must not call this.
  */
 export declare function withStateLock<T>(fn: () => Promise<T>): Promise<T>;
-/** Reserve a complete port set before another CLI invocation can allocate one. */
-export declare function reserveSession(names: string[], makeReceipt: (id: string, dir: string, ports: Record<string, number>) => SessionReceipt, beforeAllocate?: (receipts: SessionReceipt[]) => Promise<void>): Promise<SessionReceipt>;
+/**
+ * Reserve a complete port set before another CLI invocation can allocate one. Each name in bindNames also gets a
+ * private bind port (always from the random range); the others bind their public port.
+ */
+export declare function reserveSession(names: string[], makeReceipt: (id: string, dir: string, ports: Record<string, number>, bindPorts: Record<string, number>) => SessionReceipt, beforeAllocate?: (receipts: SessionReceipt[]) => Promise<void>, bindNames?: string[]): Promise<SessionReceipt>;
