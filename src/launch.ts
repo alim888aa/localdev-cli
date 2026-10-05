@@ -1,5 +1,5 @@
 import type { OutboundPolicy } from "./outbound.js";
-import { spawnService, stopService, waitForService } from "./process.js";
+import { spawnSupervised, stopService, waitForService } from "./supervised.js";
 import type { OwnedProcess, ServiceSpec } from "./types.js";
 
 /**
@@ -29,7 +29,7 @@ export async function launchService(spec: ServiceSpec, { root, sessionDir, ports
     if (!port) throw new Error(`Unknown readyPort: ${name}`);
     return { name, port, host: spec.readyHost ?? "127.0.0.1" };
   });
-  const { owned, child } = await spawnService(spec, root, sessionDir, outbound);
+  const { owned, child } = await spawnSupervised(spec.name, spec, root, sessionDir, outbound);
   if (role) owned.role = role;
   owned.launchMode = spec.launchMode;
   owned.readyPort = checks[0].port;

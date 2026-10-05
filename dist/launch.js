@@ -1,4 +1,4 @@
-import { spawnService, stopService, waitForService } from "./process.js";
+import { spawnSupervised, stopService, waitForService } from "./supervised.js";
 /**
  * The one way localdev starts a long-running process: startup's services, the fault proxy, and a service restarted
  * by `fault --mode kill`. Two phases, so a caller can spawn and record under the state lock and wait for
@@ -15,7 +15,7 @@ export async function launchService(spec, { root, sessionDir, ports, outbound, r
             throw new Error(`Unknown readyPort: ${name}`);
         return { name, port, host: spec.readyHost ?? "127.0.0.1" };
     });
-    const { owned, child } = await spawnService(spec, root, sessionDir, outbound);
+    const { owned, child } = await spawnSupervised(spec.name, spec, root, sessionDir, outbound);
     if (role)
         owned.role = role;
     owned.launchMode = spec.launchMode;

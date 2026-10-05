@@ -1,14 +1,34 @@
 import { launchService } from "./launch.js";
-import { listenerPids, ownedListenerProcesses, signalProcess, stopService } from "./process.js";
+import { listenerPids, ownedListenerProcesses } from "./listener.js";
 import { birthOf, isSameProcess } from "./process-table.js";
 import { controlProxy } from "./proxy.js";
-import { readReceipt, withStateLock, writeReceipt } from "./state.js";
+import { bindPortsOf, findReceipt, SessionGoneError, updateReceipt, withReceipt, writeReceipt } from "./state.js";
+import { ownedGroups, signalProcess, stopService } from "./supervised.js";
 // Faults have two homes. Those that change the session's processes (pause, and kill while it restarts) are recorded
 // in the receipt, so stop and --clear can always undo or see them. Proxy faults (fail, slow, hold) exist only in
 // the session's fault proxy, which owns their live counts and held requests; stopping the proxy undoes them.
 export const faultModes = ["pause", "fail", "slow", "hold", "kill"];
 export function isFaultMode(mode) {
     return faultModes.includes(mode);
+}
+/**
+ * The request for `fault ID PORT --mode MODE`, with the rules on which numbers each mode takes. `localdev fault`
+ * only parses the numbers; port is undefined when none was named.
+ */
+export function faultRequest(port, mode, { ms, count }) {
+    if (!port)
+        throw new Error("Name the port to fault, e.g. localdev fault <id> dataconnect --mode pause");
+    if (!isFaultMode(mode))
+        throw new Error(`Unsupported fault mode ${mode}; supported: ${faultModes.join(", ")}`);
+    if (mode === "slow" && ms === undefined)
+        throw new Error("--mode slow needs --ms <milliseconds>, e.g. --ms 3000");
+    if (mode !== "slow" && ms !== undefined)
+        throw new Error("--ms applies only to --mode slow");
+    if ((mode === "pause" || mode === "kill") && count !== undefined) {
+        throw new Error("--count applies to fail, slow and hold, which count requests through the fault proxy; pause and kill act on the process at once");
+    }
+    return mode === "slow" ? { mode, port, ms: ms, count }
+        : mode === "fail" || mode === "hold" ? { mode, port, count } : { mode, port };
 }
 function portNumber(receipt, portName) {
     const port = receipt.ports[portName];
@@ -18,17 +38,7 @@ function portNumber(receipt, portName) {
 }
 /** The port the service behind portName listens on: its bind port when proxied. */
 function bindPort(receipt, portName) {
-    return receipt.bindPorts?.[portName] ?? portNumber(receipt, portName);
-}
-async function readSession(id) {
-    try {
-        return await readReceipt(id);
-    }
-    catch (error) {
-        if (error.code === "ENOENT")
-            throw new Error(`No session ${id}; it is unknown or already stopped`);
-        throw error;
-    }
+    return bindPortsOf(receipt)[portName] ?? portNumber(receipt, portName);
 }
 const proxyRecord = (receipt) => receipt.processes.find((item) => item.role === "proxy");
 function ownerAlive(fault) {
@@ -96,18 +106,26 @@ function busy(receipt, active) {
     }
     return new Error(`Port ${active.port} already has an active ${active.mode} fault in session ${receipt.id}; run localdev fault ${receipt.id} ${active.port} --clear first`);
 }
+/** Listeners on the port owned by one session process, safe to signal. */
+function listenersOf(record, port) {
+    return ownedListenerProcesses(ownedGroups(record), port);
+}
 /** Listeners on the port owned by any of the session's services (never the proxy), once each. */
 function sessionListeners(receipt, port) {
     const found = new Map();
     for (const record of receipt.processes) {
         if (record.role === "proxy")
             continue;
-        for (const member of ownedListenerProcesses(record, port))
+        for (const member of listenersOf(record, port))
             found.set(member.pid, member);
     }
     return [...found.values()];
 }
-/** One process can serve several ports (e.g. a Firebase emulator hub); pausing it freezes all of them. */
+/**
+ * The other session ports the given listener processes serve: one process can serve several ports (e.g. a Firebase
+ * emulator hub), and pausing or killing it takes all of them down. Pause and kill both derive it here, from the
+ * listeners found before any signal.
+ */
 function sharedPorts(receipt, portName, pids) {
     return Object.keys(receipt.ports)
         .filter((name) => name !== portName && listenerPids(bindPort(receipt, name)).some((pid) => pids.some((member) => member.pid === pid)))
@@ -118,6 +136,7 @@ function sharedPorts(receipt, portName, pids) {
  * accepts into the backlog) but get no response, like a hung service, and the service keeps its state.
  * Other services keep running because only the listener processes are signalled, not the session group. On a
  * proxied port the service behind the proxy is paused, never the proxy, which serves every proxied port.
+ * Runs inside withReceipt: it writes the record itself, before signalling.
  */
 async function pauseService(receipt, portName) {
     await ensureFaultable(receipt, portName);
@@ -165,18 +184,17 @@ async function killService(id, portName) {
     const birth = birthOf(process.pid);
     if (!birth)
         throw new Error("Could not verify the fault command's own process identity");
-    const prepared = await withStateLock(async () => {
-        const receipt = await readSession(id);
+    const prepared = await updateReceipt(id, async (receipt) => {
         await ensureFaultable(receipt, portName);
         if (!receipt.services) {
             throw new Error(`Session ${id} was started by an older localdev without restart data; run localdev startup --replace ${id}, then retry`);
         }
         const port = bindPort(receipt, portName);
-        const record = receipt.processes.find((item) => item.role !== "proxy" && ownedListenerProcesses(item, port).length);
+        const record = receipt.processes.find((item) => item.role !== "proxy" && listenersOf(item, port).length);
         if (!record)
             throw new Error(`No listener owned by session ${id} on ${portName} (port ${port}); nothing was killed`);
         const faults = receipt.faults ?? [];
-        const paused = faults.find((item) => item.mode === "pause" && ownedListenerProcesses(record, bindPort(receipt, item.port)).length);
+        const paused = faults.find((item) => item.mode === "pause" && listenersOf(record, bindPort(receipt, item.port)).length);
         if (paused)
             throw new Error(`Service ${record.name} is paused by the ${paused.port} fault; clear it before kill`);
         const restarting = faults.find((item) => item.mode === "kill" && item.service === record.name);
@@ -187,54 +205,40 @@ async function killService(id, portName) {
             throw new Error(`Session ${id} has no restart spec for ${record.name}`);
         const fault = { port: portName, mode: "kill", service: record.name, owner: { pid: process.pid, birth }, since: new Date().toISOString() };
         receipt.faults = [...faults, fault];
-        await writeReceipt(receipt);
-        return { record, spec, fault };
+        return { record, spec, fault, sharedPorts: sharedPorts(receipt, portName, listenersOf(record, port)) };
     });
     const { record, spec, fault } = prepared;
     const isThisKill = (item) => item.mode === "kill" && item.since === fault.since && item.owner.pid === fault.owner.pid;
-    const dropKill = (owned) => withStateLock(async () => {
-        let receipt;
-        try {
-            receipt = await readReceipt(id);
-        }
-        catch {
-            return;
-        } // Stopped meanwhile: nothing left to record.
+    const dropKill = (owned) => updateReceipt(id, (receipt) => {
         receipt.faults = (receipt.faults ?? []).filter((item) => !isThisKill(item));
         const current = owned && receipt.processes.find((item) => item.pid === owned.pid && item.birth === owned.birth);
         if (current)
             current.escapedGroups = owned.escapedGroups;
-        await writeReceipt(receipt);
+    }).catch((error) => {
+        if (!(error instanceof SessionGoneError))
+            throw error; // Stopped meanwhile: nothing left to record.
     });
     if (!(await stopService(record, { hard: true }))) {
         await dropKill();
         throw new Error(`Could not verify ownership of the ${record.name} process group; nothing was restarted`);
     }
-    const launched = await withStateLock(async () => {
-        let receipt;
-        try {
-            receipt = await readReceipt(id);
-        }
-        catch {
-            throw new Error(`Session ${id} was stopped during the kill; ${record.name} was not restarted`);
-        }
-        if (receipt.state !== "ready" || !(receipt.faults ?? []).some(isThisKill)) {
-            throw new Error(`Session ${id} was stopped during the kill; ${record.name} was not restarted`);
-        }
+    const stoppedDuringKill = () => new Error(`Session ${id} was stopped during the kill; ${record.name} was not restarted`);
+    // Recorded before the readiness wait, so a stop meanwhile stops the new process too.
+    const launched = await updateReceipt(id, async (receipt) => {
+        if (receipt.state !== "ready" || !(receipt.faults ?? []).some(isThisKill))
+            throw stoppedDuringKill();
         const started = await launchService(spec, { root: receipt.projectRoot, sessionDir: receipt.sessionDir,
-            ports: receipt.bindPorts ?? receipt.ports, outbound: receipt.outbound });
+            ports: bindPortsOf(receipt), outbound: receipt.outbound });
         const index = receipt.processes.findIndex((item) => item.pid === record.pid && item.birth === record.birth);
         if (index < 0)
             receipt.processes.push(started.owned);
         else
             receipt.processes[index] = started.owned;
-        // Recorded before the readiness wait, so a stop meanwhile stops the new process too.
-        await writeReceipt(receipt);
         return started;
-    });
+    }).catch((error) => { throw error instanceof SessionGoneError ? stoppedDuringKill() : error; });
     try {
         await launched.ready(async () => {
-            const receipt = await readReceipt(id).catch(() => null);
+            const receipt = await findReceipt(id);
             if (receipt?.state !== "ready" || !(receipt.faults ?? []).some(isThisKill)) {
                 throw new Error(`Session ${id} was stopped while ${record.name} restarted`);
             }
@@ -249,11 +253,7 @@ async function killService(id, portName) {
             `${stopped ? "the replacement was stopped" : "the replacement could not be verified for stopping and stays in the session"}; log: ${launched.owned.log}`);
     }
     await dropKill(launched.owned);
-    return {
-        port: portName, mode: "kill", service: record.name,
-        sharedPorts: (record.readyChecks ?? []).map((check) => check.name).filter((name) => name !== portName),
-        oldPid: record.pid, pid: launched.owned.pid,
-    };
+    return { port: portName, mode: "kill", service: record.name, sharedPorts: prepared.sharedPorts, oldPid: record.pid, pid: launched.owned.pid };
 }
 /** Start one fault. Every mode goes through here; `localdev fault` only parses its flags. */
 export async function applyFault(id, request) {
@@ -262,15 +262,14 @@ export async function applyFault(id, request) {
     // Read, check and change under the lock, so a concurrent fault or stop cannot drop this fault's record.
     if (request.mode === "pause") {
         const { port } = request;
-        return withStateLock(async () => viewOf(await pauseService(await readSession(id), port)));
+        return withReceipt(id, async (receipt) => viewOf(await pauseService(receipt, port)));
     }
     const proxied = request;
-    return withStateLock(async () => setProxyFault(await readSession(id), proxied));
+    return withReceipt(id, (receipt) => setProxyFault(receipt, proxied));
 }
 /** Let held requests on a port through, oldest first: `count` of them, or all. */
 export async function releaseHeld(id, portName, count) {
-    return withStateLock(async () => {
-        const receipt = await readSession(id);
+    return withReceipt(id, async (receipt) => {
         portNumber(receipt, portName);
         if (!receipt.proxyPorts?.[portName])
             throw new Error(`Port ${portName} has no hold fault in session ${id}; it is not proxied`);
@@ -314,8 +313,8 @@ function remainingFaults(faults, results) {
  * faults end at once and their held requests go on in arrival order. A kill still restarting is left alone.
  */
 export async function clearFaults(id, portName) {
-    return withStateLock(async () => {
-        const receipt = await readSession(id);
+    // withReceipt, not updateReceipt: the resumed state is written before the proxy is asked and before a stuck failure.
+    return withReceipt(id, async (receipt) => {
         if (portName)
             portNumber(receipt, portName);
         const faults = receipt.faults ?? [];

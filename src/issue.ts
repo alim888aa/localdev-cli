@@ -3,6 +3,9 @@ import os from "node:os";
 import path from "node:path";
 import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
+import { parseArgs } from "./args.js";
+import { gitCommit, projectRoot } from "./checkout.js";
+import { usage } from "./help.js";
 import { runSync } from "./run-sync.js";
 import { readReceipt } from "./state.js";
 
@@ -38,28 +41,19 @@ const required: Record<Kind, Array<[string, string]>> = {
   ],
 };
 
-function parse(args: string[]): { kind: Kind; options: Record<string, string | boolean> } {
-  const kind = args.shift();
-  if (kind !== "bug" && kind !== "request") {
-    throw new Error("Usage: localdev issue bug|request [--input FILE] [--project DIR] [--session ID] [--cli-ref SHA] [--submit]");
-  }
-  const options: Record<string, string | boolean> = {};
-  const valueFlags = new Set(["--input", "--project", "--session", "--cli-ref"]);
-  for (let i = 0; i < args.length; i++) {
-    const flag = args[i];
-    if (flag === "--submit") {
-      if (options.submit) throw new Error("Duplicate --submit");
-      options.submit = true;
-    } else if (valueFlags.has(flag)) {
-      const value = args[++i];
-      if (!value || value.startsWith("--")) throw new Error(`Missing value for ${flag}`);
-      const key = flag.slice(2).replace(/-([a-z])/g, (_, letter: string) => letter.toUpperCase());
-      if (options[key]) throw new Error(`Duplicate ${flag}`);
-      options[key] = value;
-    } else {
-      throw new Error(`Unknown issue option: ${flag}`);
-    }
-  }
+function parse(args: string[]): { kind: Kind; options: Record<string, string | true> } {
+  const [kind, ...rest] = args;
+  if (kind !== "bug" && kind !== "request") throw new Error(usage("issue"));
+  const { flags } = parseArgs(rest, {
+    command: "issue",
+    values: ["--input", "--project", "--session", "--cli-ref"],
+    booleans: ["--submit"],
+    missingValue: (flag) => new Error(`Missing value for ${flag}`),
+    duplicate: (flag) => new Error(`Duplicate ${flag}`),
+    positional: (token) => new Error(`Unknown issue option: ${token}`),
+  });
+  const options = Object.fromEntries(Object.entries(flags)
+    .map(([flag, value]) => [flag.slice(2).replace(/-([a-z])/g, (_, letter: string) => letter.toUpperCase()), value]));
   return { kind, options };
 }
 
@@ -75,12 +69,6 @@ function field(fields: Fields, name: string, mandatory = true): string {
   }
   if (typeof value !== "string" || !value.trim()) throw new Error(`Invalid issue field: ${name}`);
   return value.trim();
-}
-
-function gitCommit(root: string): string | null {
-  try {
-    return runSync("git", ["rev-parse", "HEAD"], { cwd: root }).trim();
-  } catch { return null; }
 }
 
 function cliSourceCommit(): string | null {
@@ -277,20 +265,21 @@ async function publishOrPrintDraft(report: { title: string; body: string; label:
 }
 
 export async function issueCommand(args: string[]): Promise<void> {
-  const { kind, options } = parse([...args]);
-  const projectRoot = path.resolve((options.project as string | undefined) ?? process.cwd());
+  const { kind, options } = parse(args);
+  // Canonical on both sides, like startup's duplicate matching, so a symlinked checkout is not a mismatch.
+  const root = await projectRoot((options.project as string | undefined) ?? process.cwd());
   const fields = await collectFields(kind, options.input as string | undefined);
   const sessionId = options.session as string | undefined;
   const receipt = sessionId ? await readReceipt(sessionId) : null;
-  if (receipt && receipt.projectRoot !== projectRoot) {
+  if (receipt && await projectRoot(receipt.projectRoot) !== root) {
     throw new Error(`Session ${sessionId} belongs to ${receipt.projectRoot}; use --project to select that checkout`);
   }
   const packageJson = JSON.parse(await fs.readFile(new URL("../package.json", import.meta.url), "utf8")) as { version: string };
   const cliRef = (options.cliRef as string | undefined) ?? await installedCliCommit();
   if (cliRef && !/^[0-9a-f]{7,40}$/.test(cliRef)) throw new Error("--cli-ref must be a Git SHA (7 to 40 lowercase hex characters)");
   const report = render(kind, fields, {
-    projectRoot,
-    projectCommit: gitCommit(projectRoot),
+    projectRoot: root,
+    projectCommit: gitCommit(root),
     cliVersion: packageJson.version,
     cliRef,
     session: receipt ? { id: receipt.id, fixture: receipt.fixture, state: receipt.state, commit: receipt.commit } : null,

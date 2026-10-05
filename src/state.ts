@@ -3,7 +3,11 @@ import { promises as fs } from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
+import { processExists } from "./process-table.js";
 import type { SessionReceipt } from "./types.js";
+
+// The one owner of session state on disk: receipts, the allocation lock that serialises their read-modify-writes,
+// and port reservation.
 
 export const stateRoot = path.resolve(
   process.env.LOCAL_CLI_STATE_DIR ?? path.join(os.homedir(), ".local", "state", "local-cli"),
@@ -11,14 +15,69 @@ export const stateRoot = path.resolve(
 const sessionsRoot = path.join(stateRoot, "sessions");
 const lockPath = path.join(stateRoot, "allocation.lock");
 
+/** The one session-ID check: IDs are UUIDs, and only an ID that passes may name a path under the state dir. */
+export function isSessionId(id: string): boolean {
+  return /^[0-9a-f-]{36}$/.test(id);
+}
+
 export function sessionPath(id: string): string {
-  if (!/^[0-9a-f-]{36}$/.test(id)) throw new Error("Invalid session ID");
+  if (!isSessionId(id)) throw new Error("Invalid session ID");
   return path.join(sessionsRoot, id);
 }
 
 export async function readReceipt(id: string): Promise<SessionReceipt> {
   const raw = await fs.readFile(path.join(sessionPath(id), "receipt.json"), "utf8");
   return JSON.parse(raw) as SessionReceipt;
+}
+
+/** A receipt, or null when there is none (stop removes it, so stopped and unknown IDs look alike). Other errors throw. */
+export async function findReceipt(id: string): Promise<SessionReceipt | null> {
+  try { return await readReceipt(id); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+}
+
+/** Thrown by updateReceipt when the session has no receipt; callers that expect that catch it. */
+export class SessionGoneError extends Error {
+  constructor(readonly id: string) { super(`No session ${id}; it is unknown or already stopped`); }
+}
+
+/**
+ * The one receipt read-modify-write: under the state lock, read the receipt fresh, let fn check and change it, and
+ * write it back if fn returns (a throw writes nothing). Throws SessionGoneError when it is missing. Not reentrant
+ * (see withStateLock): code already holding the lock uses updateLockedReceipt.
+ */
+export function updateReceipt<T>(id: string, fn: (receipt: SessionReceipt) => Promise<T> | T): Promise<T> {
+  return withStateLock(() => updateLockedReceipt(id, fn));
+}
+
+/** updateReceipt for a caller that already holds the state lock, such as reserveSession's beforeAllocate. */
+export async function updateLockedReceipt<T>(id: string, fn: (receipt: SessionReceipt) => Promise<T> | T): Promise<T> {
+  const receipt = await requireReceipt(id);
+  const result = await fn(receipt);
+  await writeReceipt(receipt);
+  return result;
+}
+
+/**
+ * updateReceipt without the final write: for a check that must not interleave with a change but changes nothing, or
+ * a change that must be written (writeReceipt) before a side effect, such as recording a pause before signalling.
+ */
+export function withReceipt<T>(id: string, fn: (receipt: SessionReceipt) => Promise<T> | T): Promise<T> {
+  return withStateLock(async () => fn(await requireReceipt(id)));
+}
+
+async function requireReceipt(id: string): Promise<SessionReceipt> {
+  const receipt = await findReceipt(id);
+  if (!receipt) throw new SessionGoneError(id);
+  return receipt;
+}
+
+/** The ports a session's services listen on. Receipts store bindPorts only when ports are proxied. */
+export function bindPortsOf(receipt: SessionReceipt): Record<string, number> {
+  return receipt.bindPorts ?? receipt.ports;
 }
 
 export async function listReceipts(): Promise<SessionReceipt[]> {
@@ -30,6 +89,7 @@ export async function listReceipts(): Promise<SessionReceipt[]> {
   return results.filter((item): item is SessionReceipt => item !== null);
 }
 
+/** Write a receipt as is: only for a new receipt, or inside updateReceipt or withReceipt (lock held, read fresh). */
 export async function writeReceipt(receipt: SessionReceipt): Promise<void> {
   const target = path.join(sessionPath(receipt.id), "receipt.json");
   const temp = `${target}.${process.pid}.tmp`;
@@ -83,7 +143,7 @@ async function takeLegacyLock(token: string, deadline: number): Promise<void> {
     const modified = await fs.stat(lockPath).then((stat) => stat.mtimeMs, () => Date.now());
     // An owner whose process is gone is crash debris and goes at once; a live owner is always waited for,
     // whatever wrote it. Without an owner file, only age can tell (the accepted >30 s legacy limit).
-    const abandoned = owner ? !pidExists(owner.pid) : Date.now() - modified > 30_000;
+    const abandoned = owner ? !processExists(owner.pid) : Date.now() - modified > 30_000;
     if (abandoned) await fs.rm(lockPath, { recursive: true, force: true });
     else await new Promise((resolve) => setTimeout(resolve, 100));
   }
@@ -120,14 +180,10 @@ async function acquireLock(): Promise<() => Promise<void>> {
   };
 }
 
-function pidExists(pid: number): boolean {
-  try { process.kill(pid, 0); return true; } catch { return false; }
-}
-
 /**
- * Run fn under the allocation lock. Receipt read-modify-writes that must not interleave (fault, the start of stop)
- * use it, so two commands cannot each write back a receipt missing the other's change. Not reentrant: code already
- * inside reserveSession's beforeAllocate holds the lock and must not call this.
+ * Run fn under the allocation lock. Receipt read-modify-writes go through updateReceipt, which uses it, so two
+ * commands cannot each write back a receipt missing the other's change. Not reentrant: code already inside
+ * reserveSession's beforeAllocate holds the lock and must not call this or updateReceipt (it would wait forever).
  */
 export async function withStateLock<T>(fn: () => Promise<T>): Promise<T> {
   const release = await acquireLock();
@@ -136,7 +192,8 @@ export async function withStateLock<T>(fn: () => Promise<T>): Promise<T> {
 
 /**
  * Reserve a complete port set before another CLI invocation can allocate one. Each name in bindNames also gets a
- * private bind port (always from the random range); the others bind their public port.
+ * private bind port (always from the random range); the others bind their public port. beforeAllocate runs with the
+ * lock held (see withStateLock). Unique, non-empty port names are checked here, the one owner of that rule.
  */
 export async function reserveSession(
   names: string[],

@@ -58,7 +58,7 @@ function procBirth(pid, procRoot = "/proc") {
     const start = procStat(pid, procRoot)?.[19];
     return bootId && start && /^\d+$/.test(start) ? `${PROC_BIRTH}${bootId}:${start}` : null;
 }
-/** Every process in a procfs root; null when it cannot be read. Exported for linux-listener and its tests. */
+/** Every process in a procfs root; null when it cannot be read. Exported for the listener module and tests. */
 export function readProcTable(procRoot = "/proc") {
     let entries;
     try {
@@ -135,5 +135,38 @@ export function processEntry(pid) {
     }
     catch {
         return null;
+    }
+}
+/** The process table keyed by PID, or null when unreadable. procRoot reads a procfs root instead (tests). */
+export function processTable(procRoot) {
+    const entries = procRoot ? readProcTable(procRoot) : listProcesses();
+    return entries && new Map(entries.map((entry) => [entry.pid, entry]));
+}
+/**
+ * Whether pid is in group pgid or has an ancestor that is: the one parent-chain walk. A child that moved into its
+ * own group still descends from the group while its parent chain reaches it. False when the table is unreadable.
+ */
+export function descendsFromGroup(pid, pgid, table = processTable()) {
+    const seen = new Set();
+    let current = pid;
+    while (table && current > 1 && !seen.has(current)) {
+        seen.add(current);
+        const entry = table.get(current);
+        if (!entry)
+            return false;
+        if (entry.group === pgid)
+            return true;
+        current = entry.parent;
+    }
+    return false;
+}
+/** The PID exists, whoever owns it: only ESRCH means gone (EPERM is a live process of another user). */
+export function processExists(pid) {
+    try {
+        process.kill(pid, 0);
+        return true;
+    }
+    catch (error) {
+        return error.code !== "ESRCH";
     }
 }

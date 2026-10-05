@@ -1,25 +1,30 @@
 import { type ChildProcess } from "node:child_process";
 import { type OutboundPolicy } from "./outbound.js";
 import type { CommandSpec, OwnedProcess, ProcessIdentity, ServiceSpec } from "./types.js";
-/** PIDs listening on a TCP port, whoever owns them. Ownership is checked by the caller. */
-export declare function listenerPids(port: number): number[];
 /**
- * Listeners on a port that belong to this session process: inside its verified group, or inside a recorded
+ * The process groups whose listeners count as this session process's own: its verified group, and each recorded
  * escaped group that still has a verified member (its creator may have exited, so ancestry alone misses it).
- * A listener from another session or an unrelated app is never returned, so it can never be signalled.
+ * Pass them to listener.ts ownedListenerProcesses.
  */
-export declare function ownedListenerProcesses(record: OwnedProcess, port: number): ProcessIdentity[];
+export declare function ownedGroups(record: OwnedProcess): number[];
 /**
  * Signal one recorded process only while it is still the same process (start time), never a reused PID.
  * "gone" means confirmed exited or reused; "failed" means it may still be the recorded process but was not signalled.
  */
 export declare function signalProcess(member: ProcessIdentity, signal: NodeJS.Signals): "signalled" | "gone" | "failed";
-export declare function spawnService(spec: ServiceSpec, root: string, dir: string, outbound?: OutboundPolicy): Promise<{
-    owned: OwnedProcess;
-    child: ChildProcess;
-    exitFile: string;
-}>;
-export declare function spawnSeed(spec: CommandSpec, root: string, dir: string, outbound?: OutboundPolicy): Promise<{
+/** What supervisor.ts recorded when the command exited. */
+export interface CommandExit {
+    code: number | null;
+    signal: string | null;
+    error?: string;
+}
+/** The command's recorded exit, or null while it has not exited (no exit file yet). Other read errors throw. */
+export declare function readExit(exitFile: string): Promise<CommandExit | null>;
+/**
+ * Start a command in its own process group under a persistent supervisor, which keeps the group identifiable if a
+ * launcher exits. `name` names the log (services use their spec name, the seed "seed").
+ */
+export declare function spawnSupervised(name: string, spec: CommandSpec, root: string, sessionDir: string, outbound?: OutboundPolicy): Promise<{
     owned: OwnedProcess;
     child: ChildProcess;
     exitFile: string;
