@@ -1,4 +1,4 @@
-import type { OutboundPolicy } from "./outbound.js";
+import { type OutboundPolicy } from "./outbound.js";
 import { processHealth } from "./supervised.js";
 import type { OwnedProcess, SessionReceipt } from "./types.js";
 type ProcessHealth = Awaited<ReturnType<typeof processHealth>>;

@@ -5,7 +5,7 @@ import { checkCleanupPaths, checkPlan, launchDescription, loadAdapter } from "./
 import { gitCommit, projectRoot } from "./checkout.js";
 import { activeFaults, resumeAllFaults } from "./fault.js";
 import { launchService } from "./launch.js";
-import type { OutboundPolicy } from "./outbound.js";
+import { outboundRefusals, refusalExplanation, type OutboundPolicy } from "./outbound.js";
 import { birthOf, isSameProcess } from "./process-table.js";
 import { countUnit, proxyLaunch } from "./proxy.js";
 import {
@@ -230,7 +230,8 @@ export async function startSession(options: StartOptions): Promise<object> {
     await ensureState(receipt.id, "ready");
     return await describeSession(receipt);
   } catch (error) {
-    receipt.error = error instanceof Error ? error.message : String(error);
+    receipt.error = (error instanceof Error ? error.message : String(error)) +
+      (receipt.outbound === "deny" ? refusalExplanation(outboundRefusals(receipt.sessionDir)) : "");
     for (const owned of [...receipt.processes].reverse()) await stopService(owned);
     await cleanupPaths(receipt);
     if (error instanceof StartupStoppedError) throw error;
@@ -280,6 +281,7 @@ export async function describeSession(receipt: SessionReceipt): Promise<object> 
     proxiedPorts: Object.fromEntries(Object.entries(receipt.proxyPorts ?? {})
       .map(([name, unit]) => [name, countUnit(unit)])),
     outbound: receipt.outbound === "deny" ? "blocked" : "allowed",
+    ...(receipt.outbound === "deny" ? { outboundRefused: outboundRefusals(receipt.sessionDir).length } : {}),
     urls: receipt.urls,
     dataDir: receipt.dataDir,
     credentialsFile: receipt.credentialsFile,

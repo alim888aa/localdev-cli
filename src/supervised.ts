@@ -141,7 +141,7 @@ export async function spawnSupervised(
     command: spec.command,
     args: spec.args ?? [],
     cwd: spec.cwd ?? root,
-    env: applyOutboundPolicy({ ...process.env, ...spec.env }, outbound),
+    env: applyOutboundPolicy({ ...process.env, ...spec.env }, outbound, { sessionDir, service: name }),
     exitFile,
     guardFile,
   }), { mode: 0o600 });

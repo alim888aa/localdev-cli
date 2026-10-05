@@ -84,6 +84,12 @@ const server = http.createServer(async (request, response) => {
   send(dataDir);
 });
 
+// Like a tool's first-run download: a failed fetch is reported in the tool's own words, and the start fails.
+if (process.env.LOCALDEV_DOWNLOAD_AT_START && await netProbe() !== "connected") {
+  console.error("Failed to make request to the download server");
+  process.exit(1);
+}
+
 let delay = 0;
 try { delay = Number(readFileSync(path.join(dataDir, "listen-delay-ms"), "utf8")); } catch { /* listen at once */ }
 setTimeout(() => server.listen(port, "127.0.0.1"), delay);
