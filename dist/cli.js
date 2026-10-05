@@ -1,16 +1,17 @@
 #!/usr/bin/env node
-import { execFileSync } from "node:child_process";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { createInterface } from "node:readline/promises";
 import { pathToFileURL } from "node:url";
-import { birthOf, processAlive, processHealth, spawnSeed, stopService, waitForSeed } from "./process.js";
+import { processAlive, processHealth, spawnSeed, stopService, waitForSeed } from "./process.js";
+import { birthOf, isSameProcess } from "./process-table.js";
+import { runSync } from "./run-sync.js";
 import { listReceipts, readReceipt, reserveSession, sessionPath, withStateLock, writeReceipt } from "./state.js";
 import { issueCommand } from "./issue.js";
 import { activeFaults, applyFault, clearFaults, faultModes, isFaultMode, releaseHeld, resumeAllFaults } from "./fault.js";
 import { helpFor } from "./help.js";
 import { launchService } from "./launch.js";
-import { PROXY_NAME, proxySpec } from "./proxy.js";
+import { checkServiceName, countUnit, proxyLaunch } from "./proxy.js";
 function usage() {
     throw new Error("Usage: localdev startup [fixture] [--project DIR] [--adapter FILE] [--replace [ID] | --parallel] [--no-outbound] | status [ID] | stop ID | fault ID PORT --mode pause|fail|slow|hold|kill [--ms N] [--count N] | fault ID PORT --release [--count N] | fault ID [PORT] --clear | issue bug|request [--input FILE] [--project DIR] [--session ID] [--cli-ref SHA] [--submit]");
 }
@@ -59,7 +60,7 @@ async function matchingSessions(receipts, root, fixture) {
         if (itemRoot !== root)
             return null;
         if (item.state === "starting") {
-            return item.ownerBirth && birthOf(item.ownerPid) === item.ownerBirth ? item : null;
+            return isSameProcess(item.ownerPid, item.ownerBirth) ? item : null;
         }
         if (item.state !== "ready" && item.state !== "stopping" && item.state !== "failed")
             return null;
@@ -96,7 +97,7 @@ async function askAboutDuplicates(matches) {
 }
 function gitCommit(root) {
     try {
-        return execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+        return runSync("git", ["rev-parse", "HEAD"], { cwd: root }).trim();
     }
     catch {
         return null;
@@ -171,7 +172,7 @@ async function publicReceipt(receipt) {
         commit: receipt.commit,
         ports: receipt.ports,
         proxiedPorts: Object.fromEntries(Object.entries(receipt.proxyPorts ?? {})
-            .map(([name, unit]) => [name, unit === "http" ? "request" : "connection"])),
+            .map(([name, unit]) => [name, countUnit(unit)])),
         outbound: receipt.outbound === "deny" ? "blocked" : "allowed",
         urls: receipt.urls,
         dataDir: receipt.dataDir,
@@ -251,9 +252,9 @@ async function startup(args) {
         validateCleanupPaths(receipt.cleanupPaths, receipt.id, projectRoot);
         await writeReceipt(receipt);
         // The fault proxy starts first and holds the public ports of proxied names for the whole boot.
-        const proxy = proxySpec(receipt);
+        const proxy = proxyLaunch(receipt);
         if (proxy)
-            await launch(receipt, proxy, receipt.ports, undefined);
+            await launch(receipt, proxy.spec, { ports: proxy.ports, role: proxy.role });
         const plan = await adapter.createSession(context);
         if ("cleanupPaths" in plan) {
             throw new Error("Adapter cleanupPaths must be declared before createSession");
@@ -263,8 +264,8 @@ async function startup(args) {
         if (new Set(plan.services.map((item) => item.name)).size !== plan.services.length) {
             throw new Error("Service names must be unique");
         }
-        if (plan.services.some((item) => item.name === PROXY_NAME))
-            throw new Error(`Service name ${PROXY_NAME} is reserved for the fault proxy`);
+        for (const service of plan.services)
+            checkServiceName(service.name);
         for (const service of plan.services)
             launchDescription(service.launchMode);
         receipt.urls = plan.urls ?? {};
@@ -273,7 +274,7 @@ async function startup(args) {
         receipt.services = plan.services;
         await writeReceipt(receipt);
         for (const service of plan.services)
-            await launch(receipt, service, context.bindPorts, receipt.outbound);
+            await launch(receipt, service, { ports: context.bindPorts, outbound: receipt.outbound });
         if (plan.seed) {
             await ensureStarting(receipt.id);
             const { owned, child, exitFile } = await spawnSeed(plan.seed, projectRoot, receipt.sessionDir, receipt.outbound);
@@ -321,11 +322,9 @@ async function startup(args) {
     }
 }
 /** Start one long-running process for startup: record it before waiting, so stop can always find it. */
-async function launch(receipt, spec, ports, outbound) {
+async function launch(receipt, spec, options) {
     await ensureStarting(receipt.id);
-    const launched = await launchService(spec, { root: receipt.projectRoot, sessionDir: receipt.sessionDir, ports, outbound });
-    if (spec.name === PROXY_NAME)
-        launched.owned.role = "proxy";
+    const launched = await launchService(spec, { root: receipt.projectRoot, sessionDir: receipt.sessionDir, ...options });
     receipt.processes.push(launched.owned);
     await writeReceipt(receipt);
     await launched.ready(() => ensureStarting(receipt.id));

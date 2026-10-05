@@ -126,16 +126,20 @@ Usage:
 Run from the affected project's checkout. Without --input, a terminal user
 answers prompts. Unattended agents supply a JSON file. Without --submit, the
 command prints a draft; a terminal user can confirm publication after seeing
-it. --submit publishes directly to private repo alim888aa/localdev-cli with a
-bug or enhancement label. Publishing needs authenticated gh access and a known CLI commit.
-Review the draft for secrets first.
+it. --submit publishes directly to the public repo alim888aa/localdev-cli with
+a bug or enhancement label; it needs authenticated gh and a known CLI commit.
+Without gh, open the printed link to file the draft from a browser.
+Every report must say who sent it: reporter { source, agentId, project }.
+Issues are public: review the draft for secrets and personal data first.
 
 Run "localdev help issue bug|request" for the required JSON fields.`,
     "issue bug": `Report a shared-CLI bug. Project-only adapter bugs belong in that project.
 
 Usage: localdev issue bug [--input FILE] [--project DIR] [--session ID] [--cli-ref SHA] [--submit]
 
-JSON input requires: title, summary, expected, steps, impact.
+JSON input requires: reporter, title, summary, expected, steps, impact.
+  reporter    { source, agentId, project }: where you run (e.g. Codex Cloud),
+              your agent or session ID, and the project you were working on.
   steps       A string or array of step strings.
   evidence    Optional sanitized logs or status details.
   cleanup     Optional stop result and leftover process or file.
@@ -152,7 +156,8 @@ Example:
 
 Usage: localdev issue request [--input FILE] [--project DIR] [--session ID] [--cli-ref SHA] [--submit]
 
-JSON input requires: title, task, desired, whyShared, acceptance.
+JSON input requires: reporter, title, task, desired, whyShared, acceptance.
+  reporter    { source, agentId, project }, as for bugs.
   task        Agent task and current manual steps.
   desired     What the agent should be able to run or see.
   whyShared   Why the shared CLI should own this across projects.

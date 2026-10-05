@@ -5,7 +5,7 @@ import { spawnService, stopService, waitForService } from "./process.js";
  * readiness outside it. `ports` maps the spec's ready port names to the ports it listens on (bind ports for
  * services, public ports for the proxy). `outbound` is the session's network policy (never applied to the proxy).
  */
-export async function launchService(spec, { root, sessionDir, ports, outbound }) {
+export async function launchService(spec, { root, sessionDir, ports, outbound, role }) {
     const names = spec.readyPorts ?? (spec.readyPort ? [spec.readyPort] : []);
     if (!names.length)
         throw new Error(`Service ${spec.name} has no readiness ports`);
@@ -16,6 +16,8 @@ export async function launchService(spec, { root, sessionDir, ports, outbound })
         return { name, port, host: spec.readyHost ?? "127.0.0.1" };
     });
     const { owned, child } = await spawnService(spec, root, sessionDir, outbound);
+    if (role)
+        owned.role = role;
     owned.launchMode = spec.launchMode;
     owned.readyPort = checks[0].port;
     owned.readyHost = checks[0].host;

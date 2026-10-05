@@ -1,10 +1,11 @@
 #!/usr/bin/env node
-import { execFileSync } from "node:child_process";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { createInterface } from "node:readline/promises";
 import { pathToFileURL } from "node:url";
-import { birthOf, processAlive, processHealth, spawnSeed, stopService, waitForSeed } from "./process.js";
+import { processAlive, processHealth, spawnSeed, stopService, waitForSeed } from "./process.js";
+import { birthOf, isSameProcess } from "./process-table.js";
+import { runSync } from "./run-sync.js";
 import { listReceipts, readReceipt, reserveSession, sessionPath, withStateLock, writeReceipt } from "./state.js";
 import { issueCommand } from "./issue.js";
 import { activeFaults, applyFault, clearFaults, faultModes, isFaultMode, releaseHeld, resumeAllFaults, type FaultRequest } from "./fault.js";
@@ -62,7 +63,7 @@ async function matchingSessions(receipts: SessionReceipt[], root: string, fixtur
     const itemRoot = await fs.realpath(item.projectRoot).catch(() => path.resolve(item.projectRoot));
     if (itemRoot !== root) return null;
     if (item.state === "starting") {
-      return item.ownerBirth && birthOf(item.ownerPid) === item.ownerBirth ? item : null;
+      return isSameProcess(item.ownerPid, item.ownerBirth) ? item : null;
     }
     if (item.state !== "ready" && item.state !== "stopping" && item.state !== "failed") return null;
     if (!item.processes.length) return null;
@@ -93,7 +94,7 @@ async function askAboutDuplicates(matches: SessionReceipt[]): Promise<StartupCho
 
 function gitCommit(root: string): string | null {
   try {
-    return execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+    return runSync("git", ["rev-parse", "HEAD"], { cwd: root }).trim();
   } catch { return null; }
 }
 

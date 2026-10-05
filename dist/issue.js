@@ -1,11 +1,20 @@
-import { execFileSync } from "node:child_process";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
+import { runSync } from "./run-sync.js";
 import { readReceipt } from "./state.js";
 const REPO = "alim888aa/localdev-cli";
+// The repo is public, so anyone can open an issue. Every report names who sent it, so the maintainers can tell
+// their own agents' reports apart. Self-declared: it identifies a reporter, it does not authenticate one.
+const reporterFields = [
+    ["source", "Where you run (e.g. Codex Cloud, Codex local, Claude Code cloud)"],
+    ["agentId", "Your agent or session ID"],
+    ["project", "The project you were working on"],
+];
+// Browsers and GitHub accept prefilled new-issue links up to about this length.
+const MAX_ISSUE_URL = 8_000;
 const required = {
     bug: [
         ["title", "Short problem title"],
@@ -69,7 +78,7 @@ function field(fields, name, mandatory = true) {
 }
 function gitCommit(root) {
     try {
-        return execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+        return runSync("git", ["rev-parse", "HEAD"], { cwd: root }).trim();
     }
     catch {
         return null;
@@ -78,9 +87,7 @@ function gitCommit(root) {
 function cliSourceCommit() {
     const packageRoot = fileURLToPath(new URL("..", import.meta.url));
     try {
-        const topLevel = execFileSync("git", ["rev-parse", "--show-toplevel"], {
-            cwd: packageRoot, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"],
-        }).trim();
+        const topLevel = runSync("git", ["rev-parse", "--show-toplevel"], { cwd: packageRoot }).trim();
         return path.resolve(topLevel) === path.resolve(packageRoot) ? gitCommit(packageRoot) : null;
     }
     catch {
@@ -98,6 +105,25 @@ async function installedCliCommit() {
         return match[1];
     return null;
 }
+function reporter(fields) {
+    const value = fields.reporter;
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+        throw new Error("Missing issue field: reporter ({ source, agentId, project }); say where you run, your agent or session ID, and the project");
+    }
+    return reporterFields.map(([key]) => {
+        const item = value[key];
+        if (typeof item !== "string" || !item.trim())
+            throw new Error(`Missing issue field: reporter.${key}`);
+        if (item.length > 200 || item.includes("\n"))
+            throw new Error(`Invalid issue field: reporter.${key} must be one short line`);
+        return [key, item.trim()];
+    });
+}
+/** The checkout path without the home directory, which would publish the local user name. */
+function displayPath(target) {
+    const home = os.homedir();
+    return target === home || target.startsWith(home + path.sep) ? `~${target.slice(home.length)}` : target;
+}
 async function collectFields(kind, input) {
     if (input) {
         const value = JSON.parse(await fs.readFile(path.resolve(input), "utf8"));
@@ -110,7 +136,9 @@ async function collectFields(kind, input) {
     }
     const rl = createInterface({ input: process.stdin, output: process.stdout });
     try {
-        const fields = {};
+        const fields = { reporter: {} };
+        for (const [key, prompt] of reporterFields)
+            fields.reporter[key] = await rl.question(`${prompt}: `);
         for (const [key, prompt] of required[kind])
             fields[key] = await rl.question(`${prompt}: `);
         fields.evidence = await rl.question("Sanitized evidence or relevant error (optional): ");
@@ -121,6 +149,7 @@ async function collectFields(kind, input) {
     }
 }
 function render(kind, fields, context) {
+    const signed = reporter(fields);
     for (const [key] of required[kind])
         field(fields, key);
     const shortTitle = field(fields, "title").replace(/\s+/g, " ");
@@ -128,7 +157,7 @@ function render(kind, fields, context) {
         throw new Error("Issue title is too long");
     const title = `${kind === "bug" ? "bug" : "request"}: ${shortTitle}`;
     const contextLines = [
-        `- Project checkout: \`${context.projectRoot}\``,
+        `- Project checkout: \`${displayPath(context.projectRoot)}\``,
         `- Project commit: \`${context.projectCommit ?? "unknown"}\``,
         `- localdev version: \`${context.cliVersion}\``,
         `- localdev Git ref: \`${context.cliRef ?? "unknown"}\``,
@@ -138,25 +167,26 @@ function render(kind, fields, context) {
         contextLines.push(`- Session: \`${context.session.id}\` (${context.session.fixture}, ${context.session.state}; checkout commit \`${context.session.commit ?? "unknown"}\`)`);
     }
     const evidence = field(fields, "evidence", false);
-    const body = kind === "bug" ? [
-        "## What went wrong", field(fields, "summary"),
-        "## Impact", field(fields, "impact"),
-        "## Expected result", field(fields, "expected"),
-        "## Reproduce it", field(fields, "steps"),
-        "## Environment", ...contextLines,
-        "## Evidence", evidence || "None supplied; add sanitized logs or status if available.",
-        "## Cleanup", field(fields, "cleanup", false) || "Unknown; check `localdev stop <id>` if a session was created.",
-        "## Cause trace", field(fields, "causeTrace", false) || "Unknown; investigation needed.",
-        "## How to verify a fix", field(fields, "verify", false) || "Repeat the repro steps and check the expected result.",
-    ] : [
-        "## Agent task", field(fields, "task"),
-        "## Impact", field(fields, "impact", false) || "Unknown; confirm during triage.",
-        "## Desired result", field(fields, "desired"),
-        "## Why the shared CLI?", field(fields, "whyShared"),
-        "## Acceptance check", field(fields, "acceptance"),
-        "## Project context", ...contextLines,
-        "## Related work", evidence || "None supplied.",
-    ];
+    const reporterLines = signed.map(([key, value]) => `- ${key === "agentId" ? "Agent ID" : key[0].toUpperCase() + key.slice(1)}: ${value.replace(/[`<>]/g, "")}`);
+    const body = ["## Reporter", reporterLines.join("\n"), ...(kind === "bug" ? [
+            "## What went wrong", field(fields, "summary"),
+            "## Impact", field(fields, "impact"),
+            "## Expected result", field(fields, "expected"),
+            "## Reproduce it", field(fields, "steps"),
+            "## Environment", ...contextLines,
+            "## Evidence", evidence || "None supplied; add sanitized logs or status if available.",
+            "## Cleanup", field(fields, "cleanup", false) || "Unknown; check `localdev stop <id>` if a session was created.",
+            "## Cause trace", field(fields, "causeTrace", false) || "Unknown; investigation needed.",
+            "## How to verify a fix", field(fields, "verify", false) || "Repeat the repro steps and check the expected result.",
+        ] : [
+            "## Agent task", field(fields, "task"),
+            "## Impact", field(fields, "impact", false) || "Unknown; confirm during triage.",
+            "## Desired result", field(fields, "desired"),
+            "## Why the shared CLI?", field(fields, "whyShared"),
+            "## Acceptance check", field(fields, "acceptance"),
+            "## Project context", ...contextLines,
+            "## Related work", evidence || "None supplied.",
+        ])];
     return { title, body: `${body.join("\n\n")}\n`, label: kind === "bug" ? "bug" : "enhancement" };
 }
 /** Thrown only when GitHub definitely created nothing, so the caller can print the draft for someone else. */
@@ -175,9 +205,7 @@ function ghFailure(error) {
  * began (with a minute of clock skew). GitHub's `since` filters by update time, so creation is checked here.
  */
 function findCreated(title, body, postStartedAt) {
-    const recent = JSON.parse(execFileSync("gh", ["api", `repos/${REPO}/issues?state=all&sort=created&direction=desc&per_page=30`], {
-        encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
-    }));
+    const recent = JSON.parse(runSync("gh", ["api", `repos/${REPO}/issues?state=all&sort=created&direction=desc&per_page=30`]));
     return recent.find((item) => !item.pull_request && item.title === title && (item.body ?? "").trim() === body.trim()
         && Date.parse(item.created_at) >= postStartedAt - 60_000) ?? null;
 }
@@ -190,10 +218,10 @@ async function publish(title, body, label) {
         let created;
         const postStartedAt = Date.now();
         try {
-            created = JSON.parse(execFileSync("gh", [
+            created = JSON.parse(runSync("gh", [
                 "api", `repos/${REPO}/issues`, "-X", "POST",
                 "-f", `title=${title}`, "-F", `body=@${bodyFile}`, "-f", `labels[]=${label}`,
-            ], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }));
+            ]));
         }
         catch (error) {
             const failure = ghFailure(error);
@@ -214,9 +242,7 @@ async function publish(title, body, label) {
         const url = created.html_url;
         let saved;
         try {
-            saved = JSON.parse(execFileSync("gh", ["api", `repos/${REPO}/issues/${created.number}`], {
-                encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
-            }));
+            saved = JSON.parse(runSync("gh", ["api", `repos/${REPO}/issues/${created.number}`]));
         }
         catch {
             throw new Error(`Issue was created at ${url}, but readback failed; inspect it before retrying`);
@@ -230,6 +256,18 @@ async function publish(title, body, label) {
         await fs.rm(temporary, { recursive: true, force: true });
     }
 }
+/** A link that opens GitHub's new-issue form with this report filled in, for agents and people without gh. */
+function newIssueLink(report) {
+    const url = `https://github.com/${REPO}/issues/new?${new URLSearchParams({ title: report.title, body: report.body, labels: report.label })}`;
+    return url.length <= MAX_ISSUE_URL ? url : null;
+}
+function printDraft(report) {
+    console.log(`# ${report.title}\n\n${report.body}\nLabel: ${report.label}\n`);
+    const link = newIssueLink(report);
+    console.log(link
+        ? `To file it without gh, open this link while signed in to GitHub:\n${link}\n`
+        : `To file it without gh, open https://github.com/${REPO}/issues/new and paste the draft above.\n`);
+}
 async function publishOrPrintDraft(report) {
     try {
         const url = await publish(report.title, report.body, report.label);
@@ -238,8 +276,8 @@ async function publishOrPrintDraft(report) {
     catch (error) {
         if (!(error instanceof NotPublishedError))
             throw error;
-        console.log(`# ${report.title}\n\n${report.body}\nLabel: ${report.label}\n`);
-        throw new Error(`GitHub rejected the issue, so nothing was created in ${REPO}. The draft is printed above for someone with access to file. gh said: ${error.message}`);
+        printDraft(report);
+        throw new Error(`GitHub rejected the issue, so nothing was created in ${REPO}. The draft and a link to file it are printed above. gh said: ${error.message}`);
     }
 }
 export async function issueCommand(args) {
@@ -268,11 +306,11 @@ export async function issueCommand(args) {
         await publishOrPrintDraft(report);
         return;
     }
-    console.log(`# ${report.title}\n\n${report.body}\nLabel: ${report.label}\n`);
+    printDraft(report);
     if (process.stdin.isTTY && process.stdout.isTTY) {
         const rl = createInterface({ input: process.stdin, output: process.stdout });
         try {
-            const answer = await rl.question("Publish this issue to the private localdev repo? [y/N] ");
+            const answer = await rl.question(`Publish this issue to the public ${REPO} repo? [y/N] `);
             if (answer.trim().toLowerCase() === "y") {
                 if (!cliRef)
                     throw new Error("Cannot submit without the installed localdev Git commit; rerun with --cli-ref SHA");

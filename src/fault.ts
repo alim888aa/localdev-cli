@@ -1,5 +1,6 @@
 import { launchService } from "./launch.js";
-import { birthOf, listenerPids, ownedListenerProcesses, signalProcess, stopService } from "./process.js";
+import { listenerPids, ownedListenerProcesses, signalProcess, stopService } from "./process.js";
+import { birthOf, isSameProcess } from "./process-table.js";
 import { controlProxy, type CountUnit, type ProxyMode, type ProxyPortState } from "./proxy.js";
 import { readReceipt, withStateLock, writeReceipt } from "./state.js";
 import type { FaultRecord, KillFault, OwnedProcess, PauseFault, ProcessIdentity, SessionReceipt } from "./types.js";
@@ -54,7 +55,7 @@ async function readSession(id: string): Promise<SessionReceipt> {
 const proxyRecord = (receipt: SessionReceipt): OwnedProcess | undefined => receipt.processes.find((item) => item.role === "proxy");
 
 function ownerAlive(fault: KillFault): boolean {
-  return birthOf(fault.owner.pid) === fault.owner.birth;
+  return isSameProcess(fault.owner.pid, fault.owner.birth);
 }
 
 function viewOf(fault: FaultRecord): FaultView {

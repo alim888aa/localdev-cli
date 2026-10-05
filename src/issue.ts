@@ -1,9 +1,9 @@
-import { execFileSync } from "node:child_process";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
+import { runSync } from "./run-sync.js";
 import { readReceipt } from "./state.js";
 
 const REPO = "alim888aa/localdev-cli";
@@ -79,16 +79,14 @@ function field(fields: Fields, name: string, mandatory = true): string {
 
 function gitCommit(root: string): string | null {
   try {
-    return execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+    return runSync("git", ["rev-parse", "HEAD"], { cwd: root }).trim();
   } catch { return null; }
 }
 
 function cliSourceCommit(): string | null {
   const packageRoot = fileURLToPath(new URL("..", import.meta.url));
   try {
-    const topLevel = execFileSync("git", ["rev-parse", "--show-toplevel"], {
-      cwd: packageRoot, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"],
-    }).trim();
+    const topLevel = runSync("git", ["rev-parse", "--show-toplevel"], { cwd: packageRoot }).trim();
     return path.resolve(topLevel) === path.resolve(packageRoot) ? gitCommit(packageRoot) : null;
   } catch { return null; }
 }
@@ -207,9 +205,7 @@ function ghFailure(error: unknown): { definite: boolean; message: string } {
  * began (with a minute of clock skew). GitHub's `since` filters by update time, so creation is checked here.
  */
 function findCreated(title: string, body: string, postStartedAt: number): { number: number; html_url: string } | null {
-  const recent = JSON.parse(execFileSync("gh", ["api", `repos/${REPO}/issues?state=all&sort=created&direction=desc&per_page=30`], {
-    encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
-  })) as Array<{ number: number; html_url: string; title: string; body: string | null; created_at: string; pull_request?: unknown }>;
+  const recent = JSON.parse(runSync("gh", ["api", `repos/${REPO}/issues?state=all&sort=created&direction=desc&per_page=30`])) as Array<{ number: number; html_url: string; title: string; body: string | null; created_at: string; pull_request?: unknown }>;
   return recent.find((item) => !item.pull_request && item.title === title && (item.body ?? "").trim() === body.trim()
     && Date.parse(item.created_at) >= postStartedAt - 60_000) ?? null;
 }
@@ -223,10 +219,10 @@ async function publish(title: string, body: string, label: string): Promise<stri
     let created: { number: number; html_url: string } | null;
     const postStartedAt = Date.now();
     try {
-      created = JSON.parse(execFileSync("gh", [
+      created = JSON.parse(runSync("gh", [
         "api", `repos/${REPO}/issues`, "-X", "POST",
         "-f", `title=${title}`, "-F", `body=@${bodyFile}`, "-f", `labels[]=${label}`,
-      ], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }));
+      ]));
     } catch (error) {
       const failure = ghFailure(error);
       if (failure.definite) throw new NotPublishedError(failure.message);
@@ -239,9 +235,7 @@ async function publish(title: string, body: string, label: string): Promise<stri
     const url = created.html_url;
     let saved: { title: string; html_url: string; labels: Array<{ name: string }>; state: string };
     try {
-      saved = JSON.parse(execFileSync("gh", ["api", `repos/${REPO}/issues/${created.number}`], {
-        encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
-      }));
+      saved = JSON.parse(runSync("gh", ["api", `repos/${REPO}/issues/${created.number}`]));
     } catch {
       throw new Error(`Issue was created at ${url}, but readback failed; inspect it before retrying`);
     }

@@ -1,4 +1,4 @@
-import { spawn, execFileSync, type ChildProcess } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { closeSync, openSync, promises as fs } from "node:fs";
 import { randomUUID } from "node:crypto";
 import net from "node:net";
@@ -6,59 +6,49 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { linuxListenerOwned, linuxListenerPids } from "./linux-listener.js";
 import { applyOutboundPolicy, type OutboundPolicy } from "./outbound.js";
+import { birthOf, isSameProcess, listProcesses, processEntry, type ProcessEntry } from "./process-table.js";
+import { runSync } from "./run-sync.js";
 import type { CommandSpec, OwnedProcess, ProcessIdentity, ServiceSpec } from "./types.js";
 
 const supervisorPath = fileURLToPath(new URL("./supervisor.js", import.meta.url));
 
-export function birthOf(pid: number): string | null {
-  try {
-    return execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], { encoding: "utf8" }).trim() || null;
-  } catch { return null; }
+type Table = Map<number, ProcessEntry>;
+
+function tableMap(): Table | null {
+  const entries = listProcesses();
+  return entries && new Map(entries.map((entry) => [entry.pid, entry]));
 }
 
-/** The recorded process is still the same one (start time) and still in the group about to be signalled. */
+/** The recorded process is still the same one (birth) and still in the group about to be signalled. */
 function memberStillIn(member: { pid: number; birth: string }, pgid: number): boolean {
-  try {
-    const [lstart, group] = [birthOf(member.pid), Number(execFileSync("ps", ["-o", "pgid=", "-p", String(member.pid)], { encoding: "utf8" }).trim())];
-    return lstart === member.birth && group === pgid;
-  } catch { return false; }
+  return isSameProcess(member.pid, member.birth) && processEntry(member.pid)?.group === pgid;
 }
 
 function isOwned(record: OwnedProcess): boolean {
-  return birthOf(record.pid) === record.birth;
+  return isSameProcess(record.pid, record.birth);
 }
 
 function guardOwnsGroup(record: OwnedProcess): boolean {
-  if (birthOf(record.guardPid) !== record.guardBirth) return false;
-  try {
-    const pgid = Number(execFileSync("ps", ["-o", "pgid=", "-p", String(record.guardPid)], { encoding: "utf8" }).trim());
-    return pgid === record.pid;
-  } catch { return false; }
+  return isSameProcess(record.guardPid, record.guardBirth) && processEntry(record.guardPid)?.group === record.pid;
 }
 
 function groupExists(pgid: number): boolean {
   try { process.kill(-pgid, 0); } catch { return false; }
   // Exited members stay signalable as zombies until reaped, and some sandboxes' PID 1 reaps slowly.
-  // Only a live member means the group is still running.
-  try {
-    return execFileSync("ps", ["-A", "-o", "pgid=,stat="], { encoding: "utf8" }).split("\n").some((line) => {
-      const [group, stat] = line.trim().split(/\s+/);
-      return Number(group) === pgid && Boolean(stat) && !stat.startsWith("Z");
-    });
-  } catch { return true; }
+  // Only a live member means the group is still running; an unreadable table counts as running.
+  const table = listProcesses();
+  return table === null || table.some((entry) => entry.group === pgid && !entry.zombie);
 }
 
-function descendsFromGroup(pid: number, pgid: number): boolean {
+function descendsFromGroup(pid: number, pgid: number, table: Table | null): boolean {
   const seen = new Set<number>();
   let current = pid;
-  while (current > 1 && !seen.has(current)) {
+  while (table && current > 1 && !seen.has(current)) {
     seen.add(current);
-    try {
-      const [parent, group] = execFileSync("ps", ["-o", "ppid=,pgid=", "-p", String(current)], { encoding: "utf8" })
-        .trim().split(/\s+/).map(Number);
-      if (group === pgid) return true;
-      current = parent;
-    } catch { return false; }
+    const entry = table.get(current);
+    if (!entry) return false;
+    if (entry.group === pgid) return true;
+    current = entry.parent;
   }
   return false;
 }
@@ -67,24 +57,12 @@ type Member = ProcessIdentity;
 type EscapedGroup = { pgid: number; members: Member[] };
 type StoredEscapedGroup = EscapedGroup | { pgid: number; pid: number; birth: string };
 
-function processTable(): Map<number, { parent: number; group: number }> {
-  const table = new Map<number, { parent: number; group: number }>();
-  let output: string;
-  try { output = execFileSync("ps", ["-A", "-o", "pid=,ppid=,pgid="], { encoding: "utf8" }); }
-  catch { return table; }
-  for (const line of output.trim().split("\n")) {
-    const [pid, parent, group] = line.trim().split(/\s+/).map(Number);
-    if (Number.isSafeInteger(pid)) table.set(pid, { parent, group });
-  }
-  return table;
-}
-
 /**
  * Descendants of the owned group that moved into their own process group, which a group signal misses.
  * Every current member is recorded, so the group stays verifiable after the process that created it exits.
  */
 function findEscapedGroups(pgid: number): EscapedGroup[] {
-  const table = processTable();
+  const table = tableMap() ?? new Map<number, ProcessEntry>();
   const groups = new Set<number>();
   for (const [, info] of table) {
     if (info.group === pgid || groups.has(info.group)) continue;
@@ -100,8 +78,8 @@ function findEscapedGroups(pgid: number): EscapedGroup[] {
   }
   return [...groups].map((group) => ({
     pgid: group,
-    members: [...table].filter(([, info]) => info.group === group)
-      .map(([pid]) => ({ pid, birth: birthOf(pid) }))
+    members: [...table.values()].filter((info) => info.group === group)
+      .map(({ pid }) => ({ pid, birth: birthOf(pid) }))
       .filter((member): member is Member => member.birth !== null),
   })).filter((group) => group.members.length);
 }
@@ -124,13 +102,12 @@ function ownedListener(record: OwnedProcess): boolean {
   if (!record.readyPort) return false;
   if (process.platform === "linux" && linuxListenerOwned(record.readyPort, record.pid)) return true;
   try {
-    const output = execFileSync("lsof", [
-      "-nP", `-iTCP:${record.readyPort}`, "-sTCP:LISTEN", "-Fp",
-    ], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+    const output = runSync("lsof", ["-nP", `-iTCP:${record.readyPort}`, "-sTCP:LISTEN", "-Fp"]);
     const pids = output.split("\n")
       .filter((line) => /^p\d+$/.test(line))
       .map((line) => Number(line.slice(1)));
-    return pids.some((pid) => descendsFromGroup(pid, record.pid));
+    const table = tableMap();
+    return pids.some((pid) => descendsFromGroup(pid, record.pid, table));
   } catch { return false; }
 }
 
@@ -141,7 +118,7 @@ export function listenerPids(port: number): number[] {
     if (pids?.length) return pids;
   }
   try {
-    const output = execFileSync("lsof", ["-nP", `-iTCP:${port}`, "-sTCP:LISTEN", "-Fp"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+    const output = runSync("lsof", ["-nP", `-iTCP:${port}`, "-sTCP:LISTEN", "-Fp"]);
     return [...new Set(output.split("\n").filter((line) => /^p\d+$/.test(line)).map((line) => Number(line.slice(1))))];
   } catch { return []; } // lsof exits 1 when nothing listens.
 }
@@ -158,12 +135,13 @@ export function ownedListenerProcesses(record: OwnedProcess, port: number): Proc
   if (processAlive(record)) groups.unshift(record.pid);
   if (!groups.length) return [];
   const owned: ProcessIdentity[] = [];
+  const table = tableMap();
   for (const pid of listenerPids(port)) {
     // Birth first, then ancestry, then the same birth again: a PID that exits and is reused while ancestry is
     // checked would otherwise be recorded with the newcomer's birth and later pass signalProcess.
     const birth = birthOf(pid);
-    if (birth === null || !groups.some((pgid) => descendsFromGroup(pid, pgid))) continue;
-    if (birthOf(pid) === birth) owned.push({ pid, birth });
+    if (birth === null || !groups.some((pgid) => descendsFromGroup(pid, pgid, table))) continue;
+    if (isSameProcess(pid, birth)) owned.push({ pid, birth });
   }
   return owned;
 }
@@ -173,9 +151,8 @@ export function ownedListenerProcesses(record: OwnedProcess, port: number): Proc
  * "gone" means confirmed exited or reused; "failed" means it may still be the recorded process but was not signalled.
  */
 export function signalProcess(member: ProcessIdentity, signal: NodeJS.Signals): "signalled" | "gone" | "failed" {
-  const birth = birthOf(member.pid);
-  if (birth === null) return processExists(member.pid) ? "failed" : "gone";
-  if (birth !== member.birth) return "gone";
+  // A process that exists but cannot be read may still be the recorded one; one that reads differently is not.
+  if (!isSameProcess(member.pid, member.birth)) return processEntry(member.pid) === null && processExists(member.pid) ? "failed" : "gone";
   try { process.kill(member.pid, signal); return "signalled"; }
   catch (error) { return (error as NodeJS.ErrnoException).code === "ESRCH" ? "gone" : "failed"; }
 }
@@ -242,8 +219,7 @@ async function spawnManaged(
   } catch (error) {
     await fs.rm(configFile, { force: true }).catch(() => undefined);
     if (child.pid) {
-      const birth = birthOf(child.pid);
-      if (birth) {
+      if (processEntry(child.pid)) {
         try { process.kill(-child.pid, "SIGTERM"); } catch { /* Already exited. */ }
       }
     }

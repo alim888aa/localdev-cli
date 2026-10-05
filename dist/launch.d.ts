@@ -16,9 +16,10 @@ export interface LaunchedService {
  * readiness outside it. `ports` maps the spec's ready port names to the ports it listens on (bind ports for
  * services, public ports for the proxy). `outbound` is the session's network policy (never applied to the proxy).
  */
-export declare function launchService(spec: ServiceSpec, { root, sessionDir, ports, outbound }: {
+export declare function launchService(spec: ServiceSpec, { root, sessionDir, ports, outbound, role }: {
     root: string;
     sessionDir: string;
     ports: Record<string, number>;
     outbound?: OutboundPolicy;
+    role?: OwnedProcess["role"];
 }): Promise<LaunchedService>;
