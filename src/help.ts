@@ -1,13 +1,24 @@
+// The one owner of usage text: help topics, the usage error and the unknown-option hint all build on these.
+const syntax = {
+  startup: "localdev startup [fixture] [--project DIR] [--adapter FILE] [--replace [ID] | --parallel] [--no-outbound]",
+  status: "localdev status [ID]",
+  stop: "localdev stop ID",
+  faultMode: "localdev fault ID PORT --mode pause|fail|slow|hold|kill [--ms N] [--count N]",
+  faultRelease: "localdev fault ID PORT --release [--count N]",
+  faultClear: "localdev fault ID [PORT] --clear",
+  issue: "localdev issue bug|request [--input FILE] [--project DIR] [--session ID] [--cli-ref SHA] [--submit]",
+};
+
 const help: Record<string, string> = {
   overview: `localdev — isolated local test sessions for any project
 
 Usage:
-  localdev startup [fixture] [--project DIR] [--adapter FILE] [--replace [ID] | --parallel] [--no-outbound]
-  localdev status [ID]
-  localdev stop ID
-  localdev fault ID PORT --mode pause|fail|slow|hold|kill [--ms N] [--count N]
-  localdev fault ID PORT --release [--count N]
-  localdev fault ID [PORT] --clear
+  ${syntax.startup}
+  ${syntax.status}
+  ${syntax.stop}
+  ${syntax.faultMode}
+  ${syntax.faultRelease}
+  ${syntax.faultClear}
   localdev issue bug|request [options]
   localdev help [command]
 
@@ -24,7 +35,7 @@ its own fixtures in local.adapter.mjs and should list them in its agent guide.`,
 
   startup: `Start an isolated app and emulator session from a project checkout.
 
-Usage: localdev startup [fixture] [--project DIR] [--adapter FILE] [--replace [ID] | --parallel] [--no-outbound]
+Usage: ${syntax.startup}
 
   fixture         Project-defined test data; omit for the adapter's defaultFixture.
   --project DIR   Project checkout; defaults to the current directory.
@@ -58,7 +69,7 @@ accidental calls to paid or real services, not a sandbox.`,
 
   status: `Show localdev sessions and their health.
 
-Usage: localdev status [ID]
+Usage: ${syntax.status}
 
   localdev status       List every session on this machine.
   localdev status <id>  Show one session. A stopped or unknown ID prints
@@ -75,7 +86,7 @@ faults, not reachable, to see what is frozen.`,
 
   stop: `Stop and clean up one localdev session.
 
-Usage: localdev stop ID
+Usage: ${syntax.stop}
 
 Get the ID from startup or status. The command stops only that session's owned
 processes and removes its files and data. Paused services are resumed first,
@@ -177,6 +188,18 @@ JSON input requires: reporter, title, task, desired, whyShared, acceptance.
 Example:
   localdev issue request --input request.json`,
 };
+
+/** The usage error text: every command, or one command's (issue) when its own arguments are wrong. */
+export function usage(command?: "issue"): string {
+  if (command === "issue") return `Usage: ${syntax.issue}`;
+  const { startup, ...rest } = syntax;
+  return `Usage: ${[startup, ...Object.values(rest).map((line) => line.replace(/^localdev /, ""))].join(" | ")}`;
+}
+
+/** Where an unknown option is pointed: the command's help topic. */
+export function helpHint(command: string): string {
+  return `Run "localdev help ${command}" for its options.`;
+}
 
 export function helpFor(args: string[]): string | null {
   if (!args.length) return help.overview;

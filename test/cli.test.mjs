@@ -655,7 +655,11 @@ test("stop kills a server that moved into its own process group while its launch
   }
 });
 
-test("stop kills an escaped server group after the process that created the group exits", async () => {
+test("stop kills an escaped server group after the process that created the group exits, with or without a seed", async () => {
+  for (const fixture of ["escaped-anchor", "escaped-anchor-noseed"]) await escapedAnchorStops(fixture);
+});
+
+async function escapedAnchorStops(fixture) {
   const state = await mkdtemp(path.join(os.tmpdir(), "local-cli-anchor-"));
   const env = { ...process.env, LOCAL_CLI_STATE_DIR: state };
   const run = async (...args) => {
@@ -664,17 +668,17 @@ test("stop kills an escaped server group after the process that created the grou
   };
   let receipt;
   try {
-    receipt = await run("startup", "escaped-anchor", "--project", root, "--adapter", adapter);
+    receipt = await run("startup", fixture, "--project", root, "--adapter", adapter);
     assert.equal((await fetch(receipt.urls.app)).status, 200);
     await new Promise((resolve) => setTimeout(resolve, 2000)); // the anchor has exited; its server lives on
     assert.equal((await fetch(receipt.urls.app)).status, 200);
     await run("stop", receipt.id);
-    await assert.rejects(fetch(receipt.urls.app), "the server in the anchorless group is stopped too");
+    await assert.rejects(fetch(receipt.urls.app), `the server in the anchorless group is stopped too (${fixture})`);
   } finally {
     if (receipt) await run("stop", receipt.id).catch(() => undefined);
     await rm(state, { recursive: true, force: true });
   }
-});
+}
 
 test("stop kills a non-listening helper that escaped the session group after readiness", async () => {
   const state = await mkdtemp(path.join(os.tmpdir(), "local-cli-late-escape-"));

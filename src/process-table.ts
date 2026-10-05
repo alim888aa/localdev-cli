@@ -56,7 +56,7 @@ function procBirth(pid: number, procRoot = "/proc"): string | null {
   return bootId && start && /^\d+$/.test(start) ? `${PROC_BIRTH}${bootId}:${start}` : null;
 }
 
-/** Every process in a procfs root; null when it cannot be read. Exported for linux-listener and its tests. */
+/** Every process in a procfs root; null when it cannot be read. Exported for the listener module and tests. */
 export function readProcTable(procRoot = "/proc"): ProcessEntry[] | null {
   let entries: string[];
   try { entries = readdirSync(procRoot); }
@@ -123,4 +123,35 @@ export function processEntry(pid: number): ProcessEntry | null {
     const entry = { pid, parent: Number(parent), group: Number(group), zombie: (stat ?? "").startsWith("Z") };
     return Number.isSafeInteger(entry.parent) && Number.isSafeInteger(entry.group) ? entry : null;
   } catch { return null; }
+}
+
+export type ProcessTable = Map<number, ProcessEntry>;
+
+/** The process table keyed by PID, or null when unreadable. procRoot reads a procfs root instead (tests). */
+export function processTable(procRoot?: string): ProcessTable | null {
+  const entries = procRoot ? readProcTable(procRoot) : listProcesses();
+  return entries && new Map(entries.map((entry) => [entry.pid, entry]));
+}
+
+/**
+ * Whether pid is in group pgid or has an ancestor that is: the one parent-chain walk. A child that moved into its
+ * own group still descends from the group while its parent chain reaches it. False when the table is unreadable.
+ */
+export function descendsFromGroup(pid: number, pgid: number, table: ProcessTable | null = processTable()): boolean {
+  const seen = new Set<number>();
+  let current = pid;
+  while (table && current > 1 && !seen.has(current)) {
+    seen.add(current);
+    const entry = table.get(current);
+    if (!entry) return false;
+    if (entry.group === pgid) return true;
+    current = entry.parent;
+  }
+  return false;
+}
+
+/** The PID exists, whoever owns it: only ESRCH means gone (EPERM is a live process of another user). */
+export function processExists(pid: number): boolean {
+  try { process.kill(pid, 0); return true; }
+  catch (error) { return (error as NodeJS.ErrnoException).code !== "ESRCH"; }
 }

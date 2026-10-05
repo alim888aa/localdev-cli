@@ -4,15 +4,12 @@ import { randomUUID } from "node:crypto";
 import net from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { linuxListenerOwned, linuxListenerPids } from "./linux-listener.js";
+import { ownedListener } from "./listener.js";
 import { applyOutboundPolicy } from "./outbound.js";
-import { birthOf, compareBirth, isSameProcess, listProcesses, processEntry } from "./process-table.js";
-import { runSync } from "./run-sync.js";
+import { birthOf, compareBirth, descendsFromGroup, isSameProcess, listProcesses, processEntry, processExists, processTable, } from "./process-table.js";
+// Supervised process groups: every long-running process and the seed run in their own group under a supervisor
+// (supervisor.ts) with a guard, so stop can verify and signal the whole group, and descendants that escape it.
 const supervisorPath = fileURLToPath(new URL("./supervisor.js", import.meta.url));
-function tableMap() {
-    const entries = listProcesses();
-    return entries && new Map(entries.map((entry) => [entry.pid, entry]));
-}
 /** The recorded process is still the same one (birth) and still in the group about to be signalled. */
 function memberStillIn(member, pgid) {
     return isSameProcess(member.pid, member.birth) && processEntry(member.pid)?.group === pgid;
@@ -35,43 +32,18 @@ function groupExists(pgid) {
     const table = listProcesses();
     return table === null || table.some((entry) => entry.group === pgid && !entry.zombie);
 }
-function descendsFromGroup(pid, pgid, table) {
-    const seen = new Set();
-    let current = pid;
-    while (table && current > 1 && !seen.has(current)) {
-        seen.add(current);
-        const entry = table.get(current);
-        if (!entry)
-            return false;
-        if (entry.group === pgid)
-            return true;
-        current = entry.parent;
-    }
-    return false;
-}
 /**
  * Descendants of the owned group that moved into their own process group, which a group signal misses.
  * Every current member is recorded, so the group stays verifiable after the process that created it exits.
  */
 function findEscapedGroups(pgid) {
-    const table = tableMap() ?? new Map();
+    const table = processTable() ?? new Map();
     const groups = new Set();
     for (const [, info] of table) {
         if (info.group === pgid || groups.has(info.group))
             continue;
-        const seen = new Set();
-        let current = info.parent;
-        while (current > 1 && !seen.has(current)) {
-            seen.add(current);
-            const ancestor = table.get(current);
-            if (!ancestor)
-                break;
-            if (ancestor.group === pgid) {
-                groups.add(info.group);
-                break;
-            }
-            current = ancestor.parent;
-        }
+        if (descendsFromGroup(info.parent, pgid, table))
+            groups.add(info.group);
     }
     return [...groups].map((group) => ({
         pgid: group,
@@ -94,67 +66,18 @@ function mergeGroups(...lists) {
     }
     return [...merged].map(([pgid, members]) => ({ pgid, members: [...members.values()] }));
 }
-/** Check the listener PID, so another app cannot make an owned session look healthy. */
-function ownedListener(record) {
-    if (!record.readyPort)
-        return false;
-    if (process.platform === "linux" && linuxListenerOwned(record.readyPort, record.pid))
-        return true;
-    try {
-        const output = runSync("lsof", ["-nP", `-iTCP:${record.readyPort}`, "-sTCP:LISTEN", "-Fp"]);
-        const pids = output.split("\n")
-            .filter((line) => /^p\d+$/.test(line))
-            .map((line) => Number(line.slice(1)));
-        const table = tableMap();
-        return pids.some((pid) => descendsFromGroup(pid, record.pid, table));
-    }
-    catch {
-        return false;
-    }
-}
-/** PIDs listening on a TCP port, whoever owns them. Ownership is checked by the caller. */
-export function listenerPids(port) {
-    if (process.platform === "linux") {
-        const pids = linuxListenerPids(port);
-        if (pids?.length)
-            return pids;
-    }
-    try {
-        const output = runSync("lsof", ["-nP", `-iTCP:${port}`, "-sTCP:LISTEN", "-Fp"]);
-        return [...new Set(output.split("\n").filter((line) => /^p\d+$/.test(line)).map((line) => Number(line.slice(1))))];
-    }
-    catch {
-        return [];
-    } // lsof exits 1 when nothing listens.
-}
 /**
- * Listeners on a port that belong to this session process: inside its verified group, or inside a recorded
+ * The process groups whose listeners count as this session process's own: its verified group, and each recorded
  * escaped group that still has a verified member (its creator may have exited, so ancestry alone misses it).
- * A listener from another session or an unrelated app is never returned, so it can never be signalled.
+ * Pass them to listener.ts ownedListenerProcesses.
  */
-export function ownedListenerProcesses(record, port) {
+export function ownedGroups(record) {
     const groups = mergeGroups(record.escapedGroups)
         .filter((group) => group.members.some((member) => memberStillIn(member, group.pgid)))
         .map((group) => group.pgid);
     if (processAlive(record))
         groups.unshift(record.pid);
-    if (!groups.length)
-        return [];
-    const owned = [];
-    for (const pid of listenerPids(port)) {
-        // Birth first, then ancestry from a table read after it, then the same birth again: a PID that exits and is
-        // reused around the ancestry check would otherwise be recorded with the newcomer's birth (or certified by a
-        // table read before the newcomer existed) and later pass signalProcess.
-        const birth = birthOf(pid);
-        if (birth === null)
-            continue;
-        const table = tableMap();
-        if (!groups.some((pgid) => descendsFromGroup(pid, pgid, table)))
-            continue;
-        if (isSameProcess(pid, birth))
-            owned.push({ pid, birth });
-    }
-    return owned;
+    return groups;
 }
 /**
  * Signal one recorded process only while it is still the same process (start time), never a reused PID.
@@ -175,15 +98,6 @@ export function signalProcess(member, signal) {
         return error.code === "ESRCH" ? "gone" : "failed";
     }
 }
-function processExists(pid) {
-    try {
-        process.kill(pid, 0);
-        return true;
-    }
-    catch (error) {
-        return error.code !== "ESRCH";
-    }
-}
 function portOpen(host, port) {
     return new Promise((resolve) => {
         const socket = net.connect({ host, port });
@@ -193,8 +107,22 @@ function portOpen(host, port) {
         socket.once("timeout", () => { socket.destroy(); resolve(false); });
     });
 }
-/** A persistent supervisor keeps the process group identifiable if a launcher exits. */
-async function spawnManaged(name, spec, root, sessionDir, outbound) {
+/** The command's recorded exit, or null while it has not exited (no exit file yet). Other read errors throw. */
+export async function readExit(exitFile) {
+    try {
+        return JSON.parse(await fs.readFile(exitFile, "utf8"));
+    }
+    catch (error) {
+        if (error.code === "ENOENT")
+            return null;
+        throw error;
+    }
+}
+/**
+ * Start a command in its own process group under a persistent supervisor, which keeps the group identifiable if a
+ * launcher exits. `name` names the log (services use their spec name, the seed "seed").
+ */
+export async function spawnSupervised(name, spec, root, sessionDir, outbound) {
     const token = randomUUID();
     const log = path.join(sessionDir, `${name}.log`);
     const configFile = path.join(sessionDir, `${token}.command.json`);
@@ -252,12 +180,6 @@ async function spawnManaged(name, spec, root, sessionDir, outbound) {
         throw error;
     }
 }
-export function spawnService(spec, root, dir, outbound) {
-    return spawnManaged(spec.name, spec, root, dir, outbound);
-}
-export function spawnSeed(spec, root, dir, outbound) {
-    return spawnManaged("seed", spec, root, dir, outbound);
-}
 export async function waitForService(child, spec, port, record, ensureActive) {
     const deadline = Date.now() + (spec.readyTimeoutMs ?? 60_000);
     while (Date.now() < deadline) {
@@ -265,18 +187,12 @@ export async function waitForService(child, spec, port, record, ensureActive) {
         if (child.exitCode !== null || child.signalCode !== null) {
             throw new Error(`${spec.name} supervisor exited before port ${port} was ready`);
         }
-        try {
-            const exit = JSON.parse(await fs.readFile(record.exitFile, "utf8"));
-            // A successful launcher may leave its server child listening in this group.
-            if (exit.code !== 0 || exit.signal) {
-                throw new Error(`${spec.name} command exited (${exit.signal ?? `code ${exit.code}`}) before port ${port} was ready; log: ${record.log}`);
-            }
+        const exit = await readExit(record.exitFile);
+        // A successful launcher may leave its server child listening in this group.
+        if (exit && (exit.code !== 0 || exit.signal)) {
+            throw new Error(`${spec.name} command exited (${exit.signal ?? `code ${exit.code}`}) before port ${port} was ready; log: ${record.log}`);
         }
-        catch (error) {
-            if (error.code !== "ENOENT")
-                throw error;
-        }
-        if (await portOpen(spec.readyHost ?? "127.0.0.1", port) && ownedListener({ ...record, readyPort: port })) {
+        if (await portOpen(spec.readyHost ?? "127.0.0.1", port) && ownedListener(record, port)) {
             await ensureActive();
             // Record detached descendants now: once their launcher exits, ancestry can no longer find them.
             record.escapedGroups = mergeGroups(record.escapedGroups, findEscapedGroups(record.pid));
@@ -293,16 +209,11 @@ export async function waitForSeed(child, exitFile, timeoutMs = 300_000, ensureAc
     const deadline = Date.now() + timeoutMs;
     while (child.exitCode === null && child.signalCode === null) {
         await ensureActive?.();
-        try {
-            const result = JSON.parse(await fs.readFile(exitFile, "utf8"));
-            if (result.code !== 0) {
+        const result = await readExit(exitFile);
+        if (result) {
+            if (result.code !== 0)
                 throw new Error(`Fixture seed failed (${result.signal ?? result.code}); see seed.log`);
-            }
             return;
-        }
-        catch (error) {
-            if (error.code !== "ENOENT")
-                throw error;
         }
         if (Date.now() >= deadline)
             throw new Error(`Fixture seed timed out after ${timeoutMs}ms; see seed.log`);
@@ -381,16 +292,13 @@ export function processAlive(record) {
     return groupExists(record.pid) && (isOwned(record) || guardOwnsGroup(record));
 }
 export async function processHealth(record) {
-    let commandExit = null;
-    try {
-        commandExit = JSON.parse(await fs.readFile(record.exitFile, "utf8"));
-    }
-    catch { /* The command has not exited. */ }
+    // Unreadable counts as not exited: health must never throw.
+    const commandExit = await readExit(record.exitFile).catch(() => null);
     const ports = record.readyChecks ?? (record.readyPort ? [{ name: "ready", port: record.readyPort, host: record.readyHost ?? "127.0.0.1" }] : []);
     const checks = await Promise.all(ports.map(async ({ name, port, host }) => ({
         name,
         reachable: await portOpen(host, port),
-        listenerOwned: ownedListener({ ...record, readyPort: port }),
+        listenerOwned: ownedListener(record, port),
     })));
     return {
         reachable: checks.length ? checks.every((item) => item.reachable) : null,

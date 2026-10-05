@@ -1,3 +1,4 @@
+import type { OutboundPolicy } from "./outbound.js";
 /** A project adapter declares its port names and turns a fixture into local commands. */
 export interface ProjectAdapter {
     ports: string[];
@@ -117,7 +118,7 @@ export interface SessionReceipt {
     /** The adapter's service specs, env included, so kill can restart one. Never shown by status. */
     services?: ServiceSpec[];
     /** Set by startup --no-outbound; every service, seed and restart runs under it. */
-    outbound?: "deny";
+    outbound?: OutboundPolicy;
     cleanupPaths?: string[];
     processes: OwnedProcess[];
     /** Recorded before any process is paused, so stop and --clear can always resume it. */

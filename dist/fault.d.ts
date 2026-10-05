@@ -19,6 +19,14 @@ export type FaultRequest = {
     ms: number;
     count?: number;
 };
+/**
+ * The request for `fault ID PORT --mode MODE`, with the rules on which numbers each mode takes. `localdev fault`
+ * only parses the numbers; port is undefined when none was named.
+ */
+export declare function faultRequest(port: string | undefined, mode: string, { ms, count }: {
+    ms?: number;
+    count?: number;
+}): FaultRequest;
 /** A fault as status and the fault command show it. `unit` says what a count counts, or that it acts on processes. */
 export type FaultView = (PauseFault & {
     unit: "process";

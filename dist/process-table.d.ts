@@ -6,7 +6,7 @@ export interface ProcessEntry {
 }
 /** The boot identity a /proc birth carries, or null when none is valid. Exported for tests. */
 export declare function readBootId(procRoot: string): string | null;
-/** Every process in a procfs root; null when it cannot be read. Exported for linux-listener and its tests. */
+/** Every process in a procfs root; null when it cannot be read. Exported for the listener module and tests. */
 export declare function readProcTable(procRoot?: string): ProcessEntry[] | null;
 /**
  * A process's birth, to record now and compare later with isSameProcess. Null when the process is gone or
@@ -28,3 +28,13 @@ export declare function compareBirth(pid: number, recordedBirth: string | null |
 export declare function listProcesses(): ProcessEntry[] | null;
 /** One process, or null when it is gone or unreadable. */
 export declare function processEntry(pid: number): ProcessEntry | null;
+export type ProcessTable = Map<number, ProcessEntry>;
+/** The process table keyed by PID, or null when unreadable. procRoot reads a procfs root instead (tests). */
+export declare function processTable(procRoot?: string): ProcessTable | null;
+/**
+ * Whether pid is in group pgid or has an ancestor that is: the one parent-chain walk. A child that moved into its
+ * own group still descends from the group while its parent chain reaches it. False when the table is unreadable.
+ */
+export declare function descendsFromGroup(pid: number, pgid: number, table?: ProcessTable | null): boolean;
+/** The PID exists, whoever owns it: only ESRCH means gone (EPERM is a live process of another user). */
+export declare function processExists(pid: number): boolean;
