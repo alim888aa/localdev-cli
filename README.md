@@ -1,10 +1,12 @@
-# Local CLI
+# localdev
 
-Run an isolated local verification session for a project. The shared CLI owns
+Run an isolated local verification session for a project, built for coding
+agents that boot an app, check their work and hand proof to other agents. The shared CLI owns
 session IDs, port allocation, process groups, a private data directory, receipts,
 `status`, and `stop`. A project adapter defines its services, fixture seed, and URLs.
 
-Install the shared command globally from an **exact commit** of its Git repo:
+Install the shared command globally from an **exact commit** of its Git repo.
+The repo is public, so no GitHub access is needed (Node 22 or newer):
 
 ```sh
 pnpm add --global 'git+https://github.com/alim888aa/localdev-cli.git#<commit-sha>'
@@ -100,12 +102,16 @@ file and explicitly publish:
 localdev issue bug --input report.json --submit
 ```
 
-See [issue command examples and input fields](docs/issues.md). GitHub CLI
-(`gh`) access to this private repo is required to publish.
+Every report names who sent it in a required `reporter` field: where the agent
+runs, its agent or session ID, and the project. See
+[issue command examples and input fields](docs/issues.md). Publishing with
+`--submit` needs an authenticated GitHub CLI (`gh`). Without it, the command
+prints a link that opens GitHub's new-issue form with the report filled in.
+Issues are public.
 
 Agents can use the shared [localdev issue-maker skill](skills/localdev-issue-maker/SKILL.md)
 to check evidence, search for duplicates, and write the issue in this format.
-Install it once per Codex user from this private repo, then project-specific
+Install it once per Codex user from this repo, then project-specific
 agent guides can point to `$localdev-issue-maker`:
 
 ```sh
@@ -175,6 +181,10 @@ adapter if a fixture needs a different limit. A failed startup stops launched
 processes and keeps its receipt/logs until
 `stop <id>` so the failure can be inspected.
 
-The generic core has synthetic adapter tests. The SkateBhoarder adapter is in
-that project's `local.adapter.mjs`, with project-specific agent instructions in
-`docs/agents/local-suite.md`.
+The generic core has synthetic adapter tests. Real adapters live in their own
+projects, next to project-specific agent instructions.
+
+## Security and license
+
+Report security problems privately, as described in [SECURITY.md](SECURITY.md),
+never in a public issue. localdev is released under the [MIT License](LICENSE).

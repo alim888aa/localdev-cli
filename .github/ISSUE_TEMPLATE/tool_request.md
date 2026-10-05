@@ -4,6 +4,12 @@ about: Propose a reusable localdev capability
 title: "request: "
 ---
 
+## Reporter
+
+- Source: <!-- where you run, e.g. Codex Cloud, Codex local, Claude Code cloud -->
+- Agent ID: <!-- your agent, task or session ID -->
+- Project: <!-- the project you were working on -->
+
 ## Agent task
 
 <!-- Which project and verification task needs this? Describe the current manual steps. -->

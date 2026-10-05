@@ -1,6 +1,7 @@
 import { launchService } from "./launch.js";
-import { birthOf, listenerPids, ownedListenerProcesses, signalProcess, stopService } from "./process.js";
-import { controlProxy, type ProxyMode, type ProxyPortState } from "./proxy.js";
+import { listenerPids, ownedListenerProcesses, signalProcess, stopService } from "./process.js";
+import { birthOf, isSameProcess } from "./process-table.js";
+import { controlProxy, type CountUnit, type ProxyMode, type ProxyPortState } from "./proxy.js";
 import { readReceipt, withStateLock, writeReceipt } from "./state.js";
 import type { FaultRecord, KillFault, OwnedProcess, PauseFault, ProcessIdentity, SessionReceipt } from "./types.js";
 
@@ -25,12 +26,12 @@ export type FaultRequest =
 export type FaultView =
   | (PauseFault & { unit: "process" })
   | { port: string; mode: "kill"; unit: "process"; service: string; state: "restarting" | "interrupted"; since: string }
-  | { port: string; mode: ProxyMode; unit: "request" | "connection"; ms?: number; remaining: number | null; held: number; since?: string };
+  | { port: string; mode: ProxyMode; unit: CountUnit; ms?: number; remaining: number | null; held: number; since?: string };
 
 type ClearedFault =
   | (PauseFault & { resumed: number[] })
   | { port: string; mode: "kill"; service: string }
-  | { port: string; mode: ProxyMode; unit: "request" | "connection"; released: number };
+  | { port: string; mode: ProxyMode; unit: CountUnit; released: number };
 
 function portNumber(receipt: SessionReceipt, portName: string): number {
   const port = receipt.ports[portName];
@@ -54,7 +55,7 @@ async function readSession(id: string): Promise<SessionReceipt> {
 const proxyRecord = (receipt: SessionReceipt): OwnedProcess | undefined => receipt.processes.find((item) => item.role === "proxy");
 
 function ownerAlive(fault: KillFault): boolean {
-  return birthOf(fault.owner.pid) === fault.owner.birth;
+  return isSameProcess(fault.owner.pid, fault.owner.birth);
 }
 
 function viewOf(fault: FaultRecord): FaultView {

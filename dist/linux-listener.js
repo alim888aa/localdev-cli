@@ -1,5 +1,6 @@
 import { readFileSync, readdirSync, readlinkSync } from "node:fs";
 import path from "node:path";
+import { readProcTable } from "./process-table.js";
 /** Read the socket inode for TCP listeners on one port in the current network namespace. */
 function listenerInodes(port, procRoot) {
     const inodes = new Set();
@@ -22,33 +23,8 @@ function listenerInodes(port, procRoot) {
     return readAny ? inodes : null;
 }
 function processTable(procRoot) {
-    const table = new Map();
-    let entries;
-    try {
-        entries = readdirSync(procRoot);
-    }
-    catch {
-        return null;
-    }
-    for (const entry of entries) {
-        if (!/^\d+$/.test(entry))
-            continue;
-        try {
-            const raw = readFileSync(path.join(procRoot, entry, "stat"), "utf8");
-            const end = raw.lastIndexOf(")");
-            if (end < 0)
-                continue;
-            // Fields after (comm) begin with state, parent PID, then process group.
-            const fields = raw.slice(end + 1).trim().split(/\s+/);
-            const parent = Number(fields[1]);
-            const group = Number(fields[2]);
-            if (Number.isSafeInteger(parent) && Number.isSafeInteger(group)) {
-                table.set(Number(entry), { parent, group });
-            }
-        }
-        catch { /* The process may have exited while we read it. */ }
-    }
-    return table;
+    const entries = readProcTable(procRoot);
+    return entries && new Map(entries.map(({ pid, parent, group }) => [pid, { parent, group }]));
 }
 function belongsToGroup(pid, group, table) {
     const seen = new Set();

@@ -19,8 +19,8 @@ export interface LaunchedService {
  * readiness outside it. `ports` maps the spec's ready port names to the ports it listens on (bind ports for
  * services, public ports for the proxy). `outbound` is the session's network policy (never applied to the proxy).
  */
-export async function launchService(spec: ServiceSpec, { root, sessionDir, ports, outbound }: {
-  root: string; sessionDir: string; ports: Record<string, number>; outbound?: OutboundPolicy;
+export async function launchService(spec: ServiceSpec, { root, sessionDir, ports, outbound, role }: {
+  root: string; sessionDir: string; ports: Record<string, number>; outbound?: OutboundPolicy; role?: OwnedProcess["role"];
 }): Promise<LaunchedService> {
   const names = spec.readyPorts ?? (spec.readyPort ? [spec.readyPort] : []);
   if (!names.length) throw new Error(`Service ${spec.name} has no readiness ports`);
@@ -30,6 +30,7 @@ export async function launchService(spec: ServiceSpec, { root, sessionDir, ports
     return { name, port, host: spec.readyHost ?? "127.0.0.1" };
   });
   const { owned, child } = await spawnService(spec, root, sessionDir, outbound);
+  if (role) owned.role = role;
   owned.launchMode = spec.launchMode;
   owned.readyPort = checks[0].port;
   owned.readyHost = checks[0].host;

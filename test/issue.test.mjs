@@ -10,22 +10,45 @@ import test from "node:test";
 const exec = promisify(execFile);
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const cli = path.join(root, "dist", "cli.js");
+const reporter = { source: "Codex Cloud", agentId: "task-123", project: "example-app" };
 
 test("issue draft formats project context without publishing", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "localdev-issue-draft-"));
   try {
     const input = path.join(dir, "bug.json");
     await writeFile(input, JSON.stringify({
-      title: "stop leaves a listener", summary: "The old app still answers.",
+      reporter, title: "stop leaves a listener", summary: "The old app still answers.",
       expected: "Its listener closes.", steps: ["Start a session", "Stop it", "Request its URL"],
       impact: "Another agent may test the wrong app.",
     }));
     const { stdout } = await exec(process.execPath, [cli, "issue", "bug", "--input", input, "--cli-ref", "abc1234"], { cwd: root });
     assert.match(stdout, /# bug: stop leaves a listener/);
+    assert.match(stdout, /## Reporter\n\n- Source: Codex Cloud\n- Agent ID: task-123\n- Project: example-app\n\n## What went wrong/);
+    if (root.startsWith(os.homedir() + path.sep)) {
+      assert.ok(!stdout.includes(os.homedir()), "the home directory (and local user name) is not published");
+      assert.match(stdout, /Project checkout: `~\//);
+    }
+    const link = stdout.split("\n").find((line) => line.startsWith("https://github.com/alim888aa/localdev-cli/issues/new?"));
+    assert.ok(link, "a prefilled new-issue link is printed for agents without gh");
+    const params = new URL(link).searchParams;
+    assert.equal(params.get("title"), "bug: stop leaves a listener");
+    assert.equal(params.get("labels"), "bug");
+    assert.match(params.get("body"), /## Reporter/);
     assert.match(stdout, /1\. Start a session\n2\. Stop it/);
     assert.match(stdout, /localdev Git ref: `abc1234`/);
     assert.match(stdout, /Label: bug/);
     assert.match(stdout, /Draft only/);
+
+    for (const [fields, expected] of [
+      [{ reporter: undefined }, /Missing issue field: reporter \(\{ source, agentId, project \}\)/],
+      [{ reporter: { ...reporter, agentId: " " } }, /Missing issue field: reporter.agentId/],
+      [{ reporter: { ...reporter, project: "a\nb" } }, /reporter.project must be one short line/],
+      [{ reporter: { ...reporter, project: "a\rb" } }, /reporter.project must be one short line/],
+      [{ reporter: { ...reporter, agentId: "<>" } }, /Missing issue field: reporter.agentId/],
+    ]) {
+      await writeFile(input, JSON.stringify({ ...JSON.parse(await readFile(input, "utf8")), ...fields }));
+      await assert.rejects(exec(process.execPath, [cli, "issue", "bug", "--input", input], { cwd: root }), expected);
+    }
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -70,8 +93,8 @@ if (args[0] === "api" && args.includes("POST")) {
     await chmod(fakeGh, 0o755);
     const env = { ...process.env, PATH: `${dir}${path.delimiter}${process.env.PATH}`, FAKE_GH_STORE: store };
     const cases = [
-      ["bug", { title: "wrong port", summary: "The app answers on another session's port.", expected: "A new free port.", steps: ["Start two projects", "Inspect ports"], impact: "Cross-project collision." }, "bug", "## Reproduce it"],
-      ["request", { title: "export session context", task: "Agents copy URLs by hand.", desired: "Print a reusable env file.", whyShared: "All projects need the same receipt format.", acceptance: "Two projects get distinct env files." }, "enhancement", "## Acceptance check"],
+      ["bug", { reporter, title: "wrong port", summary: "The app answers on another session's port.", expected: "A new free port.", steps: ["Start two projects", "Inspect ports"], impact: "Cross-project collision." }, "bug", "## Reproduce it"],
+      ["request", { reporter, title: "export session context", task: "Agents copy URLs by hand.", desired: "Print a reusable env file.", whyShared: "All projects need the same receipt format.", acceptance: "Two projects get distinct env files." }, "enhancement", "## Acceptance check"],
     ];
     for (const [kind, fields, label, heading] of cases) {
       const input = path.join(dir, `${kind}.json`);
@@ -82,6 +105,7 @@ if (args[0] === "api" && args.includes("POST")) {
       assert.equal(saved.label, label);
       assert.match(saved.body, new RegExp(heading));
       assert.match(saved.body, /Project commit: `[0-9a-f]{40}`/);
+      assert.match(saved.body, /^## Reporter\n\n- Source: Codex Cloud/);
       assert.doesNotMatch(stdout, /## Agent task|## What went wrong/);
     }
     const input = path.join(dir, "bug.json");
@@ -89,6 +113,7 @@ if (args[0] === "api" && args.includes("POST")) {
       .then(() => assert.fail("publishing should fail"), (error) => error);
     assert.match(failed.stdout, /## What went wrong/, "the draft is printed when publishing fails");
     assert.match(failed.stderr, /GitHub rejected the issue, so nothing was created/);
+    assert.match(failed.stdout, /open this link while signed in to GitHub:\nhttps:\/\/github.com\/alim888aa\/localdev-cli\/issues\/new\?/);
 
     // A lost response after GitHub created the issue is found again instead of reported as "nothing created".
     await rm(store, { force: true });
@@ -122,7 +147,7 @@ test("installed CLI does not mistake the host project's commit for its own", asy
     await exec("git", ["-C", project, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-q", "--allow-empty", "-m", "initial"]);
     const input = path.join(dir, "bug.json");
     await writeFile(input, JSON.stringify({
-      title: "bad port", summary: "The listener is wrong.", expected: "The owned listener answers.",
+      reporter, title: "bad port", summary: "The listener is wrong.", expected: "The owned listener answers.",
       steps: ["Start the app", "Inspect its port"], impact: "Verification is blocked.",
     }));
     const { stdout } = await exec(process.execPath, [path.join(installed, "dist", "cli.js"), "issue", "bug", "--input", input], { cwd: project });

@@ -4,6 +4,12 @@ about: Report a reproducible problem in the shared localdev CLI
 title: "bug: "
 ---
 
+## Reporter
+
+- Source: <!-- where you run, e.g. Codex Cloud, Codex local, Claude Code cloud -->
+- Agent ID: <!-- your agent, task or session ID -->
+- Project: <!-- the project you were working on -->
+
 ## What went wrong
 
 <!-- One problem per issue. Give the short symptom first. -->

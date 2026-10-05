@@ -1,5 +1,6 @@
 import { launchService } from "./launch.js";
-import { birthOf, listenerPids, ownedListenerProcesses, signalProcess, stopService } from "./process.js";
+import { listenerPids, ownedListenerProcesses, signalProcess, stopService } from "./process.js";
+import { birthOf, isSameProcess } from "./process-table.js";
 import { controlProxy } from "./proxy.js";
 import { readReceipt, withStateLock, writeReceipt } from "./state.js";
 // Faults have two homes. Those that change the session's processes (pause, and kill while it restarts) are recorded
@@ -31,7 +32,7 @@ async function readSession(id) {
 }
 const proxyRecord = (receipt) => receipt.processes.find((item) => item.role === "proxy");
 function ownerAlive(fault) {
-    return birthOf(fault.owner.pid) === fault.owner.birth;
+    return isSameProcess(fault.owner.pid, fault.owner.birth);
 }
 function viewOf(fault) {
     if (fault.mode === "pause")

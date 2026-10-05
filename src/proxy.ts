@@ -1,11 +1,17 @@
 import net from "node:net";
 import { fileURLToPath } from "node:url";
-import type { ProxyUnit, ServiceSpec, SessionReceipt } from "./types.js";
+import type { OwnedProcess, ProxyUnit, ServiceSpec, SessionReceipt } from "./types.js";
 
 /** One proxied port: the proxy listens on the public port and forwards to the service's bind port. */
 export interface ProxyRoute { port: string; unit: ProxyUnit; listen: number; target: number }
 
 export type ProxyMode = "fail" | "slow" | "hold";
+
+/** What one use of a proxy fault counts on a port: an HTTP request, or a TCP connection. */
+export type CountUnit = "request" | "connection";
+export function countUnit(unit: ProxyUnit): CountUnit {
+  return unit === "http" ? "request" : "connection";
+}
 export type ProxyControl =
   | { op: "set"; port: string; mode: ProxyMode; ms?: number; count?: number }
   | { op: "release"; port: string; count?: number }
@@ -15,7 +21,7 @@ export type ProxyControl =
 /** A proxied port's live state. `remaining` is null when the fault lasts until cleared. */
 export interface ProxyPortState {
   port: string;
-  unit: "request" | "connection";
+  unit: CountUnit;
   mode: "pass" | ProxyMode;
   ms?: number;
   remaining: number | null;
@@ -28,23 +34,32 @@ export type ProxyReply =
   | { ok: true; ports: ProxyPortState[]; released?: number }
   | { ok: false; error: string; port?: ProxyPortState };
 
-export const PROXY_NAME = "localdev-proxy";
+const PROXY_NAME = "localdev-proxy";
 const proxyProcessPath = fileURLToPath(new URL("./proxy-process.js", import.meta.url));
 
-/** The proxy as a service spec for launchService, or null when the adapter proxies no port. */
-export function proxySpec(receipt: SessionReceipt): ServiceSpec | null {
+/** Refuses an adapter service named like the fault proxy, which status and stop must tell apart. */
+export function checkServiceName(name: string): void {
+  if (name === PROXY_NAME) throw new Error(`Service name ${PROXY_NAME} is reserved for the fault proxy`);
+}
+
+/**
+ * How startup launches the session's fault proxy (through launchService, like any service), or null when the
+ * adapter proxies no port. The proxy listens on, and is ready on, the public ports.
+ */
+export function proxyLaunch(receipt: SessionReceipt): { spec: ServiceSpec; ports: Record<string, number>; role: NonNullable<OwnedProcess["role"]> } | null {
   const names = Object.keys(receipt.proxyPorts ?? {});
   if (!names.length) return null;
   const routes: ProxyRoute[] = names.map((port) => ({
     port, unit: receipt.proxyPorts![port], listen: receipt.ports[port], target: receipt.bindPorts![port],
   }));
-  return {
+  const spec = {
     name: PROXY_NAME,
     command: process.execPath,
     args: [proxyProcessPath, JSON.stringify(routes)],
     cwd: receipt.sessionDir,
     readyPorts: names,
   };
+  return { spec, ports: receipt.ports, role: "proxy" };
 }
 
 /**

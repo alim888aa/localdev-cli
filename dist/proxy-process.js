@@ -5,6 +5,7 @@ import http from "node:http";
 import net from "node:net";
 import { rmSync } from "node:fs";
 import { pipeline } from "node:stream";
+import { countUnit } from "./proxy.js";
 const routes = JSON.parse(process.argv[2]);
 const ports = new Map(routes.map((route) => [route.port, { route, mode: "pass", remaining: null, held: [] }]));
 // One arriving request or connection: forwarded, delayed, refused or parked by the port's fault. A fault with a
@@ -45,7 +46,7 @@ function release(state, count) {
 function view(state) {
     state.held = state.held.filter((item) => !item.dropped());
     return {
-        port: state.route.port, unit: state.route.unit === "http" ? "request" : "connection", mode: state.mode,
+        port: state.route.port, unit: countUnit(state.route.unit), mode: state.mode,
         ...(state.ms === undefined ? {} : { ms: state.ms }), remaining: state.remaining, held: state.held.length,
         ...(state.since ? { since: state.since } : {}),
     };

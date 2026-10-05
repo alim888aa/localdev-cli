@@ -1,4 +1,4 @@
-import { type ProxyMode } from "./proxy.js";
+import { type CountUnit, type ProxyMode } from "./proxy.js";
 import type { PauseFault, SessionReceipt } from "./types.js";
 export declare const faultModes: readonly ["pause", "fail", "slow", "hold", "kill"];
 export type FaultMode = typeof faultModes[number];
@@ -32,7 +32,7 @@ export type FaultView = (PauseFault & {
 } | {
     port: string;
     mode: ProxyMode;
-    unit: "request" | "connection";
+    unit: CountUnit;
     ms?: number;
     remaining: number | null;
     held: number;
@@ -47,7 +47,7 @@ type ClearedFault = (PauseFault & {
 } | {
     port: string;
     mode: ProxyMode;
-    unit: "request" | "connection";
+    unit: CountUnit;
     released: number;
 };
 /**

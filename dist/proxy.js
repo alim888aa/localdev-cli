@@ -1,22 +1,34 @@
 import net from "node:net";
 import { fileURLToPath } from "node:url";
-export const PROXY_NAME = "localdev-proxy";
+export function countUnit(unit) {
+    return unit === "http" ? "request" : "connection";
+}
+const PROXY_NAME = "localdev-proxy";
 const proxyProcessPath = fileURLToPath(new URL("./proxy-process.js", import.meta.url));
-/** The proxy as a service spec for launchService, or null when the adapter proxies no port. */
-export function proxySpec(receipt) {
+/** Refuses an adapter service named like the fault proxy, which status and stop must tell apart. */
+export function checkServiceName(name) {
+    if (name === PROXY_NAME)
+        throw new Error(`Service name ${PROXY_NAME} is reserved for the fault proxy`);
+}
+/**
+ * How startup launches the session's fault proxy (through launchService, like any service), or null when the
+ * adapter proxies no port. The proxy listens on, and is ready on, the public ports.
+ */
+export function proxyLaunch(receipt) {
     const names = Object.keys(receipt.proxyPorts ?? {});
     if (!names.length)
         return null;
     const routes = names.map((port) => ({
         port, unit: receipt.proxyPorts[port], listen: receipt.ports[port], target: receipt.bindPorts[port],
     }));
-    return {
+    const spec = {
         name: PROXY_NAME,
         command: process.execPath,
         args: [proxyProcessPath, JSON.stringify(routes)],
         cwd: receipt.sessionDir,
         readyPorts: names,
     };
+    return { spec, ports: receipt.ports, role: "proxy" };
 }
 /**
  * macOS limits a unix socket path to 104 bytes, and a session dir under a long state dir is already close to that.

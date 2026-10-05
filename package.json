@@ -2,6 +2,7 @@
   "name": "@local-tools/cli",
   "version": "0.2.1",
   "private": true,
+  "license": "MIT",
   "type": "module",
   "repository": "https://github.com/alim888aa/localdev-cli",
   "bin": {

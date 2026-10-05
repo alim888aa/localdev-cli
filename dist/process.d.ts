@@ -1,7 +1,6 @@
 import { type ChildProcess } from "node:child_process";
 import { type OutboundPolicy } from "./outbound.js";
 import type { CommandSpec, OwnedProcess, ProcessIdentity, ServiceSpec } from "./types.js";
-export declare function birthOf(pid: number): string | null;
 /** PIDs listening on a TCP port, whoever owns them. Ownership is checked by the caller. */
 export declare function listenerPids(port: number): number[];
 /**
