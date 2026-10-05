@@ -4,6 +4,8 @@ export interface ProcessEntry {
     group: number;
     zombie: boolean;
 }
+/** The boot identity a /proc birth carries, or null when none is valid. Exported for tests. */
+export declare function readBootId(procRoot: string): string | null;
 /** Every process in a procfs root; null when it cannot be read. Exported for linux-listener and its tests. */
 export declare function readProcTable(procRoot?: string): ProcessEntry[] | null;
 /**

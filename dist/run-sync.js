@@ -9,7 +9,7 @@ export function runSync(command, args, options = {}) {
     const result = spawnSync(command, args, { cwd: options.cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], maxBuffer: 64 * 1024 * 1024 });
     // Only that known EPERM report is overridden; any other spawn error, or missing output, still fails.
     const spawnError = result.error?.code;
-    if (result.status === 0 && result.signal === null && (!spawnError || spawnError === "EPERM") && typeof result.stdout === "string") {
+    if (result.status === 0 && result.signal === null && (!result.error || spawnError === "EPERM") && typeof result.stdout === "string") {
         return result.stdout;
     }
     const reason = result.error ? result.error.message : result.signal ? `signal ${result.signal}` : `exit code ${result.status}`;

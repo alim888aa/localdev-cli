@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { spawnSync } from "node:child_process";
-import { birthOf, compareBirth, isSameProcess, listProcesses, processEntry, readProcTable } from "../dist/process-table.js";
+import { birthOf, compareBirth, isSameProcess, listProcesses, processEntry, readBootId, readProcTable } from "../dist/process-table.js";
 
 test("the procfs reader parses parent, group and zombie state, even with spaces and parentheses in names", async () => {
   const proc = await mkdtemp(path.join(os.tmpdir(), "localdev-proctable-"));
@@ -43,4 +43,22 @@ test("births are compared in the format they were recorded in, and never match a
   assert.equal(processEntry(process.pid).group, processEntry(process.pid).group);
   assert.equal(processEntry(process.pid).zombie, false);
   assert.ok(listProcesses().some((entry) => entry.pid === process.pid && entry.parent === process.ppid));
+});
+
+test("a /proc birth needs a valid boot identity, never a shared placeholder", async () => {
+  const proc = await mkdtemp(path.join(os.tmpdir(), "localdev-bootid-"));
+  try {
+    await mkdir(path.join(proc, "sys", "kernel", "random"), { recursive: true });
+    const bootFile = path.join(proc, "sys", "kernel", "random", "boot_id");
+    await writeFile(bootFile, "3f1c2a9e-1b2c-4d5e-8f90-a1b2c3d4e5f6\n");
+    assert.equal(readBootId(proc), "3f1c2a9e-1b2c-4d5e-8f90-a1b2c3d4e5f6");
+    await writeFile(bootFile, "\n");
+    await writeFile(path.join(proc, "stat"), "cpu 1 2 3\nbtime 1759640000\n");
+    assert.equal(readBootId(proc), "btime1759640000", "an empty boot_id falls back to the boot time");
+    await writeFile(path.join(proc, "stat"), "cpu 1 2 3\nbtime 0\n");
+    assert.equal(readBootId(proc), null, "no valid identity: no birth, rather than one every boot shares");
+    assert.equal(readBootId(path.join(proc, "missing")), null);
+  } finally {
+    await rm(proc, { recursive: true, force: true });
+  }
 });

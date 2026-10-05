@@ -5,18 +5,23 @@ const PROC_BIRTH = "proc:";
 const useProc = process.platform === "linux" && readableProc("/proc");
 // /proc start times count clock ticks since boot, and receipts outlive reboots, so a /proc birth also names the
 // boot: a process after a reboot never matches one recorded before it, even with the same PID and start tick.
-const bootId = useProc ? readBootId("/proc") : "";
-function readBootId(procRoot) {
+// Without a valid boot identity there is no /proc birth at all (null: unknown), never a shared placeholder.
+const bootId = useProc ? readBootId("/proc") : null;
+/** The boot identity a /proc birth carries, or null when none is valid. Exported for tests. */
+export function readBootId(procRoot) {
     try {
-        return readFileSync(path.join(procRoot, "sys", "kernel", "random", "boot_id"), "utf8").trim();
+        const id = readFileSync(path.join(procRoot, "sys", "kernel", "random", "boot_id"), "utf8").trim();
+        if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id))
+            return id;
     }
     catch { /* Fall back to the boot time. */ }
     try {
-        return `btime${/^btime (\d+)$/m.exec(readFileSync(path.join(procRoot, "stat"), "utf8"))?.[1] ?? ""}`;
+        const btime = /^btime (\d+)$/m.exec(readFileSync(path.join(procRoot, "stat"), "utf8"))?.[1];
+        if (btime && Number(btime) > 0)
+            return `btime${btime}`;
     }
-    catch {
-        return "unknown";
-    }
+    catch { /* No boot identity. */ }
+    return null;
 }
 function readableProc(procRoot) {
     try {
@@ -51,7 +56,7 @@ function procEntry(pid, procRoot) {
 }
 function procBirth(pid, procRoot = "/proc") {
     const start = procStat(pid, procRoot)?.[19];
-    return start && /^\d+$/.test(start) ? `${PROC_BIRTH}${bootId}:${start}` : null;
+    return bootId && start && /^\d+$/.test(start) ? `${PROC_BIRTH}${bootId}:${start}` : null;
 }
 /** Every process in a procfs root; null when it cannot be read. Exported for linux-listener and its tests. */
 export function readProcTable(procRoot = "/proc") {
