@@ -221,9 +221,10 @@ export async function startSession(options: StartOptions): Promise<object> {
       await saveStarting(receipt);
     }
     // Read, check and commit under the lock stop's markStopping takes: ready only if nothing stopped it meanwhile.
+    // It also saves startup's last field changes (escaped groups found by the last readiness wait).
     await updateReceipt(receipt.id, (stored) => {
       if (stored.state !== "starting") throw new StartupStoppedError(receipt.id);
-      stored.state = "ready";
+      Object.assign(stored, startupFields(receipt), { state: "ready" });
     }).catch(stoppedIfGone(receipt.id));
     receipt.state = "ready";
     await ensureState(receipt.id, "ready");
@@ -249,6 +250,8 @@ async function launch(receipt: SessionReceipt, spec: ServiceSpec,
   receipt.processes.push(launched.owned);
   await saveStarting(receipt);
   await launched.ready(() => ensureStarting(receipt.id));
+  // Readiness records escaped groups in memory; save them now, so a stop before the next write still finds them.
+  await saveStarting(receipt);
 }
 
 /** A session as status and startup show it: never the service specs, env or credentials themselves. */

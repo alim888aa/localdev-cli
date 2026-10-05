@@ -25,7 +25,7 @@ export default {
       command: process.execPath,
       args: fixture === "neverready"
         ? [path.join(projectRoot, "test", "slow-seed.mjs"), dataDir]
-        : [path.join(projectRoot, "test", fixture === "launcher" ? "launcher.mjs" : fixture === "detached" ? "detached-launcher.mjs" : fixture === "escaped-anchor" ? "escaped-anchor.mjs" : fixture === "late-escape" ? "late-escape.mjs" : "server.mjs"), String(ports.app), dataDir],
+        : [path.join(projectRoot, "test", fixture === "launcher" ? "launcher.mjs" : fixture === "detached" ? "detached-launcher.mjs" : fixture === "escaped-anchor" || fixture === "escaped-anchor-noseed" ? "escaped-anchor.mjs" : fixture === "late-escape" ? "late-escape.mjs" : "server.mjs"), String(ports.app), dataDir],
       env: { LOCALDEV_TEST_SECRET: "private-test-value" },
       readyPort: "app",
       readyTimeoutMs: 5000,
@@ -39,7 +39,8 @@ export default {
     });
     return {
       services,
-      seed: {
+      // Without a seed, the ready transition is startup's last receipt write.
+      seed: fixture === "escaped-anchor-noseed" ? undefined : {
         command: process.execPath,
         args: [path.join(projectRoot, "test", fixture === "slowseed" || fixture === "timedseed" ? "slow-seed.mjs" : "seed.mjs"), dataDir],
         ...(fixture === "timedseed" ? { timeoutMs: 500 } : {}),
