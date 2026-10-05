@@ -670,7 +670,12 @@ async function escapedAnchorStops(fixture) {
   try {
     receipt = await run("startup", fixture, "--project", root, "--adapter", adapter);
     assert.equal((await fetch(receipt.urls.app)).status, 200);
-    await new Promise((resolve) => setTimeout(resolve, 2000)); // the anchor has exited; its server lives on
+    // The anchor created the escaped group (its PID is the group ID) and exits once the server is up; wait for that
+    // instead of a fixed delay, so stop is tested only after ancestry can no longer find the server.
+    const stored = JSON.parse(await readFile(path.join(state, "sessions", receipt.id, "receipt.json"), "utf8"));
+    const anchor = stored.processes.flatMap((item) => item.escapedGroups ?? []).map((group) => group.pgid)[0];
+    assert.ok(anchor, "startup recorded the escaped group");
+    await waitUntil(() => !running(anchor));
     assert.equal((await fetch(receipt.urls.app)).status, 200);
     await run("stop", receipt.id);
     await assert.rejects(fetch(receipt.urls.app), `the server in the anchorless group is stopped too (${fixture})`);

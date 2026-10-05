@@ -368,6 +368,7 @@ test("--no-outbound blocks the app and its children from outside hosts while loo
     assert.equal(probe.httpProxy, "", "the adapter's proxy variable is cleared");
     assert.match(probe.nodeOptions, /--max-old-space-size=256 --import=file:/, "the adapter's NODE_OPTIONS are kept");
     assert.equal(await text(`${blocked.urls.app}/probe-child`), "ELOCALDEV_OUTBOUND", "a child process is blocked too");
+    assert.ok((await run("status", blocked.id))[0].outboundRefused >= 3, "status counts the refused connections (#20)");
     const variants = JSON.parse(await text(`${blocked.urls.app}/probe-variants`));
     assert.equal(variants.emptyPath, "ELOCALDEV_OUTBOUND", "an empty path is TCP, as Node treats it");
     assert.equal(variants.nullPath, "ELOCALDEV_OUTBOUND", "a null path is TCP, as Node treats it");
@@ -425,6 +426,22 @@ test("the proxy cuts a truncated answer short and releases the service when a cl
     client.abort();
     await waitUntil(async () => await text(`${a.urls.api}/hangs`) === "0");
     assert.equal(await text(`${a.urls.api}/echo/still`), "still", "the proxy keeps serving");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("a guarded startup that fails on a refused download names the host and how to warm the cache (#20)", async () => {
+  const { start, run, cleanup } = await session("localdev-outbound-download-");
+  try {
+    const failure = await start("download", "--no-outbound", "--project", root, "--adapter", faultsAdapter).then(() => null, (error) => error);
+    assert.ok(failure, "startup fails");
+    assert.match(failure.stderr, /The --no-outbound guard refused outside connections during startup: app → 192\.0\.2\.1:80\./);
+    assert.match(failure.stderr, /warm its cache by starting this fixture once without --no-outbound/);
+    const [failed] = await run("status");
+    assert.equal(failed.state, "failed");
+    assert.equal(failed.outboundRefused, 1);
+    assert.match(failed.error, /guard refused outside connections/);
   } finally {
     await cleanup();
   }
