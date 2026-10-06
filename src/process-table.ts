@@ -155,3 +155,17 @@ export function processExists(pid: number): boolean {
   try { process.kill(pid, 0); return true; }
   catch (error) { return (error as NodeJS.ErrnoException).code !== "ESRCH"; }
 }
+
+/** Refuse a Linux PID view that cannot safely identify processes before startup has any side effects. */
+export function assertProcessRuntime(platform: string = process.platform, pid = process.pid, procRoot = "/proc"): void {
+  if (platform !== "linux") return;
+  let raw: string;
+  try { raw = readFileSync(path.join(procRoot, "self", "stat"), "utf8"); }
+  catch { return; } // No readable procfs: existing ps identity checks still apply.
+  const observed = /^(\d+) \(/.exec(raw)?.[1];
+  if (!observed || Number(observed) !== pid) {
+    throw new Error("Unsupported process identity view: Node and /proc/self/stat report different or unreadable PIDs. " +
+      "localdev cannot safely track service ownership in this runtime. Use a runtime with a consistent PID namespace " +
+      "and matching procfs mount. Startup stopped before loading the adapter or creating a session.");
+  }
+}

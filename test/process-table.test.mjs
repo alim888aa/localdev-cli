@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { spawnSync } from "node:child_process";
-import { birthOf, compareBirth, isSameProcess, listProcesses, processEntry, readBootId, readProcTable } from "../dist/process-table.js";
+import { assertProcessRuntime, birthOf, compareBirth, isSameProcess, listProcesses, processEntry, readBootId, readProcTable } from "../dist/process-table.js";
 
 test("the procfs reader parses parent, group and zombie state, even with spaces and parentheses in names", async () => {
   const proc = await mkdtemp(path.join(os.tmpdir(), "localdev-proctable-"));
@@ -61,4 +61,20 @@ test("a /proc birth needs a valid boot identity, never a shared placeholder", as
   } finally {
     await rm(proc, { recursive: true, force: true });
   }
+});
+
+test("startup identity rejects mismatched procfs PIDs, including a readable unrelated numeric PID", async () => {
+  const proc = await mkdtemp(path.join(os.tmpdir(), "localdev-pidview-"));
+  try {
+    await mkdir(path.join(proc, "self"));
+    await mkdir(path.join(proc, "2"));
+    await writeFile(path.join(proc, "2", "stat"), "2 (other) S 1 2");
+    await writeFile(path.join(proc, "self", "stat"), "3704 (node) S 1 3704");
+    assert.throws(() => assertProcessRuntime("linux", 2, proc), /Unsupported process identity view/);
+    assert.doesNotThrow(() => assertProcessRuntime("linux", 3704, proc));
+    assert.doesNotThrow(() => assertProcessRuntime("darwin", 2, proc));
+    await writeFile(path.join(proc, "self", "stat"), "malformed");
+    assert.throws(() => assertProcessRuntime("linux", 2, proc), /Unsupported process identity view/);
+    assert.doesNotThrow(() => assertProcessRuntime("linux", 2, path.join(proc, "absent")));
+  } finally { await rm(proc, { recursive: true, force: true }); }
 });

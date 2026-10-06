@@ -38,3 +38,5 @@ export declare function processTable(procRoot?: string): ProcessTable | null;
 export declare function descendsFromGroup(pid: number, pgid: number, table?: ProcessTable | null): boolean;
 /** The PID exists, whoever owns it: only ESRCH means gone (EPERM is a live process of another user). */
 export declare function processExists(pid: number): boolean;
+/** Refuse a Linux PID view that cannot safely identify processes before startup has any side effects. */
+export declare function assertProcessRuntime(platform?: string, pid?: number, procRoot?: string): void;

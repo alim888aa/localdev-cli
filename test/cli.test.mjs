@@ -911,3 +911,28 @@ test("status rejects an unrelated listener that takes the session port", async (
     await rm(state, { recursive: true, force: true });
   }
 });
+
+test("mismatched Linux PID views fail before adapter import or state creation", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "localdev-runtime-"));
+  try {
+    const preload = path.join(dir, "pid-view.mjs");
+    await writeFile(preload, `import fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
+Object.defineProperty(process, "platform", { value: "linux" });
+const read = fs.readFileSync;
+fs.readFileSync = function(file, ...args) {
+  if (String(file) === "/proc/self/stat") return "999999999 (node) S 1 999999999";
+  return read.call(this, file, ...args);
+};
+syncBuiltinESMExports();`);
+    const ownAdapter = path.join(dir, "adapter.mjs");
+    const marker = path.join(dir, "adapter-loaded");
+    await writeFile(ownAdapter, `import fs from "node:fs"; fs.writeFileSync(${JSON.stringify(marker)}, "loaded"); throw new Error("adapter ran");`);
+    await assert.rejects(exec(process.execPath, ["--import", preload, cli, "startup", "base", "--adapter", ownAdapter], {
+      cwd: dir, env: { ...process.env, LOCAL_CLI_STATE_DIR: path.join(dir, "state") }
+    }), (error) => error.code === 1 && /Unsupported process identity view/.test(error.stderr));
+    const files = await readdir(dir);
+    assert.equal(files.includes("adapter-loaded"), false);
+    assert.equal(files.includes("state"), false);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});

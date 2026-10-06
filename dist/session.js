@@ -6,7 +6,7 @@ import { gitCommit, projectRoot } from "./checkout.js";
 import { activeFaults, resumeAllFaults } from "./fault.js";
 import { launchService } from "./launch.js";
 import { outboundRefusals, refusalExplanation } from "./outbound.js";
-import { birthOf, isSameProcess } from "./process-table.js";
+import { assertProcessRuntime, birthOf, isSameProcess } from "./process-table.js";
 import { countUnit, proxyLaunch } from "./proxy.js";
 import { bindPortsOf, findReceipt, isSessionId, reserveSession, SessionGoneError, sessionPath, updateLockedReceipt, updateReceipt, } from "./state.js";
 import { processAlive, processHealth, spawnSupervised, stopService, waitForSeed } from "./supervised.js";
@@ -114,6 +114,7 @@ function stoppedIfGone(id) {
 }
 /** `localdev startup`: start a session and return its status view, or throw once everything it started is stopped. */
 export async function startSession(options) {
+    assertProcessRuntime();
     const root = await projectRoot(options.project ?? process.cwd(), { mustExist: true });
     const adapterPath = path.resolve(options.adapter ?? path.join(root, "local.adapter.mjs"));
     const { adapter, proxyPorts } = await loadAdapter(adapterPath);

@@ -48,6 +48,10 @@ things, update this file in the same PR.
 
 ## Processes
 
+- **Runtime identity check**: before loading an adapter or reserving a session,
+  startup rejects a readable Linux procfs whose self PID disagrees with Node.
+  This reports an unsupported runtime; it does not translate PIDs or bypass ownership.
+
 - **Owned process**: one supervised process group (services, the proxy, the
   seed): the supervisor's PID is the group ID, a guard keeps the group
   identifiable, and escaped groups are descendants that left it.

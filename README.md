@@ -188,3 +188,12 @@ projects, next to project-specific agent instructions.
 
 Report security problems privately, as described in [SECURITY.md](SECURITY.md),
 never in a public issue. localdev is released under the [MIT License](LICENSE).
+
+### Managed Linux runtimes
+
+Startup requires Node and the mounted `/proc` to use the same PID namespace.
+If `/proc/self/stat` reports a different PID from Node, localdev rejects startup
+before loading the adapter or creating a session. Use a runtime with a procfs
+mount matching its process namespace; localdev cannot safely translate those
+IDs or track and stop services in that environment. This check does not certify
+other runtime capabilities, such as permission to listen on loopback.
