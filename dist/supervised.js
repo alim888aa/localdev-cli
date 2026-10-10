@@ -190,7 +190,7 @@ export async function waitForService(child, spec, port, record, ensureActive) {
         const exit = await readExit(record.exitFile);
         // A successful launcher may leave its server child listening in this group.
         if (exit && (exit.code !== 0 || exit.signal)) {
-            throw new Error(`${spec.name} command exited (${exit.signal ?? `code ${exit.code}`}) before port ${port} was ready; log: ${record.log}`);
+            throw new Error(`${spec.name} command exited (${exit.signal ?? `code ${exit.code}`}) before port ${port} was ready; command: ${spec.command}${exit.error ? `; ${exit.error}` : ""}; log: ${record.log}`);
         }
         if (await portOpen(spec.readyHost ?? "127.0.0.1", port) && ownedListener(record, port)) {
             await ensureActive();

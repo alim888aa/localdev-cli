@@ -465,10 +465,10 @@ test("fault pause freezes one session's service until cleared and leaves another
     second = await run("startup", "catalog", "--project", root, "--adapter", adapter);
     assert.deepEqual((await run("status", first.id))[0].faults, []);
     await assert.rejects(run("fault", first.id, "--clear"), /No active faults/);
-    await assert.rejects(run("fault", first.id, "app", "--clear"), /No active fault on app/);
+    await assert.rejects(run("fault", first.id, "testApp", "--clear"), /No active fault on testApp/);
 
-    const { fault } = await run("fault", first.id, "app", "--mode", "pause");
-    assert.equal(fault.port, "app");
+    const { fault } = await run("fault", first.id, "testApp", "--mode", "pause");
+    assert.equal(fault.port, "testApp");
     assert.equal(fault.mode, "pause");
     assert.ok(fault.pids.length >= 1);
     for (const { pid } of fault.pids) assert.ok(processState(pid).startsWith("T"), "the listener is stopped");
@@ -479,25 +479,25 @@ test("fault pause freezes one session's service until cleared and leaves another
     const [paused] = await run("status", first.id);
     assert.equal(paused.state, "ready");
     assert.equal(paused.faults.length, 1);
-    assert.equal(paused.faults[0].port, "app");
+    assert.equal(paused.faults[0].port, "testApp");
     assert.deepEqual((await run("status", second.id))[0].faults, []);
 
-    await assert.rejects(run("fault", first.id, "app", "--mode", "pause"), /already paused/);
+    await assert.rejects(run("fault", first.id, "testApp", "--mode", "pause"), /already paused/);
     await assert.rejects(run("fault", first.id, "nope", "--mode", "pause"), /Unknown port nope/);
-    await assert.rejects(run("fault", first.id, "app", "--mode", "reject"), /Unsupported fault mode reject/);
-    await assert.rejects(run("fault", first.id, "app", "--mode", "pause", "--clear"), /Choose one of --mode, --release or --clear/);
-    await assert.rejects(run("fault", "00000000-0000-4000-8000-000000000000", "app", "--mode", "pause"), /No session/);
+    await assert.rejects(run("fault", first.id, "testApp", "--mode", "reject"), /Unsupported fault mode reject/);
+    await assert.rejects(run("fault", first.id, "testApp", "--mode", "pause", "--clear"), /Choose one of --mode, --release or --clear/);
+    await assert.rejects(run("fault", "00000000-0000-4000-8000-000000000000", "testApp", "--mode", "pause"), /No session/);
     // The fixture declares a secondary port that nothing listens on in the base fixture.
     await assert.rejects(run("fault", first.id, "secondary", "--mode", "pause"), /No listener owned/);
 
-    const { cleared } = await run("fault", first.id, "app", "--clear");
-    assert.deepEqual(cleared.map((item) => item.port), ["app"]);
+    const { cleared } = await run("fault", first.id, "testApp", "--clear");
+    assert.deepEqual(cleared.map((item) => item.port), ["testApp"]);
     assert.deepEqual(cleared[0].resumed, fault.pids.map(({ pid }) => pid));
     assert.equal(await answers(first.urls.app), true, "the cleared service answers again");
     assert.deepEqual((await run("status", first.id))[0].faults, []);
-    await assert.rejects(run("fault", first.id, "app", "--clear"), /No active fault on app/);
+    await assert.rejects(run("fault", first.id, "testApp", "--clear"), /No active fault on testApp/);
 
-    await run("fault", first.id, "app", "--mode", "pause");
+    await run("fault", first.id, "testApp", "--mode", "pause");
     assert.equal((await run("fault", first.id, "--clear")).cleared.length, 1, "clear without a port clears all");
     assert.equal(await answers(first.urls.app), true);
   } finally {
@@ -517,7 +517,7 @@ test("stop while a service is paused finishes promptly and leaves no processes",
   let receipt;
   try {
     receipt = await run("startup", "--project", root, "--adapter", adapter);
-    const { fault } = await run("fault", receipt.id, "app", "--mode", "pause");
+    const { fault } = await run("fault", receipt.id, "testApp", "--mode", "pause");
     const started = Date.now();
     await run("stop", receipt.id);
     // Without resuming first, SIGTERM stays pending on the frozen server until the 4 s SIGKILL fallback.
@@ -555,7 +555,7 @@ test("fault and stop wait for the allocation lock, and a racing pause never outl
   try {
     receipt = await run("startup", "--project", root, "--adapter", adapter);
     await new Promise((resolve) => holder.listen({ host: "127.0.0.1", port: lockPort, exclusive: true }, resolve));
-    pause = spawnCli("fault", receipt.id, "app", "--mode", "pause");
+    pause = spawnCli("fault", receipt.id, "testApp", "--mode", "pause");
     stop = spawnCli("stop", receipt.id);
     await new Promise((resolve) => setTimeout(resolve, 1000));
     assert.equal(pause.child.exitCode, null, "fault waits for the lock");
@@ -600,14 +600,14 @@ test("fault refuses to pause an unrelated listener on the session port", async (
     assert.ok(serverPid);
     process.kill(serverPid, "SIGKILL");
     await waitUntil(async () => (await run("status", receipt.id))[0].state === "degraded");
-    intruder = spawn(process.execPath, [path.join(root, "test", "server.mjs"), String(receipt.ports.app), "intruder"], {
+    intruder = spawn(process.execPath, [path.join(root, "test", "server.mjs"), String(receipt.ports.testApp), "intruder"], {
       cwd: root, stdio: "ignore",
     });
     await waitUntil(async () => {
       try { return (await (await fetch(receipt.urls.app)).text()) === "intruder"; }
       catch { return false; }
     });
-    await assert.rejects(run("fault", receipt.id, "app", "--mode", "pause"), /No listener owned/);
+    await assert.rejects(run("fault", receipt.id, "testApp", "--mode", "pause"), /No listener owned/);
     assert.ok(!processState(intruder.pid).startsWith("T"), "the unrelated server was not paused");
     assert.equal(await answers(receipt.urls.app), true);
   } finally {
@@ -891,7 +891,7 @@ test("status rejects an unrelated listener that takes the session port", async (
       const [item] = await run("status", receipt.id);
       return item.state === "degraded" ? item : null;
     });
-    intruder = spawn(process.execPath, [path.join(root, "test", "server.mjs"), String(service.readyPort ?? receipt.ports.app), "intruder"], {
+    intruder = spawn(process.execPath, [path.join(root, "test", "server.mjs"), String(service.readyPort ?? receipt.ports.testApp), "intruder"], {
       cwd: root, stdio: "ignore",
     });
     await waitUntil(async () => {

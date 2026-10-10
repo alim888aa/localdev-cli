@@ -8,7 +8,7 @@ Read [CONTEXT.md](CONTEXT.md), [CODING_STANDARDS.md](CODING_STANDARDS.md), [ERRO
 in [docs/adapter.md](docs/adapter.md), decisions in [docs/adr](docs/adr). The repo is public: keep secrets, local paths
 and private links out of code, tests, issues and PRs.
 
-Run tests one at a time on a shared machine: build first, then `node --test --test-concurrency=1 test/*.test.mjs`. Wait
+Run tests one at a time on a shared machine: build first, then `node --test --test-concurrency=1 'test/**/*.test.mjs'`. Wait
 on observable state in tests (status, a response, a process), never on a fixed sleep.
 
 Clean up after yourself: stop every session and process you started before you end a turn. The dispatch thread removes
@@ -33,6 +33,7 @@ localdev has no UI, so "browser proof" here means driving the built CLI against 
 `seed-fails`, a proxied `api` port for faults) and an isolated state directory, and writes `<sessionDir>/cli.env`.
 In a subshell, `source` that file, `cd "$CLIENT_PROJECT"` and run `"$LOCALDEV" startup|status|fault|stop`: that runs
 this checkout's build and never sees the machine's real sessions. Stop the nested sessions before the outer one.
+The nested web service uses port name `fixtureWeb`, so it and test apps use random ports outside clients' 3000–3010 range.
 
 A change clients need doesn't reach them on merge. Say in the PR which clients need a re-pin (see **How a fix reaches
 clients** in `CONTEXT.md`); the owner arranges it.

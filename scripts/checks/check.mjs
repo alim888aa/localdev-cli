@@ -80,7 +80,8 @@ function distInSync() {
 // Build first, then run the tests one file at a time (AGENTS.md).
 function tests() {
   if (!run("build", "pnpm", ["build"])) return;
-  const files = readdirSync(join(REPO_ROOT, "test"))
+  // Recursive: a suite with its own fixtures lives in a subfolder of test/.
+  const files = readdirSync(join(REPO_ROOT, "test"), {recursive: true})
     .filter((name) => name.endsWith(".test.mjs"))
     .sort()
     .map((name) => `test/${name}`);

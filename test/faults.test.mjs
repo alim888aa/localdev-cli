@@ -30,7 +30,6 @@ async function session(prefix, { longStateDir = false } = {}) {
   // A state dir this long puts proxy.sock's absolute path past macOS's 104-byte socket path limit.
   const state = longStateDir ? path.join(temporary, "s".repeat(80)) : temporary;
   const env = { ...process.env, LOCAL_CLI_STATE_DIR: state };
-  const started = [];
   const run = async (...args) => {
     const { stdout } = await exec(process.execPath, [cli, ...args], { env, cwd: root });
     return JSON.parse(stdout);
@@ -42,14 +41,11 @@ async function session(prefix, { longStateDir = false } = {}) {
     const exited = new Promise((resolve) => child.once("exit", (code) => resolve({ code, stderr })));
     return { child, exited };
   };
-  const start = async (...args) => {
-    const receipt = await run("startup", ...args);
-    started.push(receipt.id);
-    return receipt;
-  };
+  const start = (...args) => run("startup", ...args);
   const statusOf = async (id) => (await run("status", id))[0];
   const cleanup = async () => {
-    for (const id of started) await run("stop", id).catch(() => undefined);
+    // Every session, failed startups included: each keeps its temp dir in /tmp until stopped.
+    for (const { id } of await run("status").catch(() => [])) await run("stop", id).catch(() => undefined);
     await rm(temporary, { recursive: true, force: true });
   };
   return { state, temporary, run, spawnCli, start, statusOf, cleanup };
@@ -105,7 +101,7 @@ test("an adapter without proxyPorts gets no fault proxy and unchanged ports", as
     assert.deepEqual(receipt.processes.map((item) => item.name), ["app"]);
     assert.equal(proxyOf(receipt), undefined);
     assert.deepEqual(receipt.proxiedPorts, {});
-    await assert.rejects(run("fault", receipt.id, "app", "--mode", "fail"), /not proxied/);
+    await assert.rejects(run("fault", receipt.id, "testApp", "--mode", "fail"), /not proxied/);
   } finally {
     await cleanup();
   }
@@ -250,7 +246,7 @@ test("kill restarts the service with its data, healthy, without touching another
     assert.equal(processNamed(await statusOf(b.id), "api").pid, processNamed(b, "api").pid, "the other session is untouched");
     assert.equal(await text(`${b.urls.api}/echo/b`), "b");
 
-    const unproxied = (await run("fault", a.id, "app", "--mode", "kill")).fault;
+    const unproxied = (await run("fault", a.id, "testApp", "--mode", "kill")).fault;
     assert.equal(unproxied.service, "app");
     assert.equal(await text(`${a.urls.app}/echo/app`), "app");
     assert.equal((await statusOf(a.id)).state, "ready");
@@ -290,7 +286,7 @@ test("stop ends every fault and leaves no proxy, held request or process behind"
     held.catch(() => undefined);
     await waitUntil(async () => (await statusOf(a.id)).faults[0]?.held === 1);
     await run("fault", a.id, "raw", "--mode", "fail");
-    await run("fault", a.id, "app", "--mode", "pause");
+    await run("fault", a.id, "testApp", "--mode", "pause");
     assert.equal((await statusOf(a.id)).faults.length, 3);
     await run("stop", a.id);
     await assert.rejects(held, "the held request is dropped, not left hanging");
@@ -339,8 +335,8 @@ test("fault validates its flags before touching the session", async () => {
       [["proxied", "--mode", "slow", "--ms", "600001"], /--ms must be a whole number from 1 to 600000/],
       [["proxied", "--mode", "fail", "--count", "0"], /--count must be a positive whole number/],
       [["proxied", "--mode", "fail", "--count", "1.5"], /--count must be a positive whole number/],
-      [["app", "--mode", "pause", "--count", "1"], /--count applies to fail, slow and hold/],
-      [["app", "--mode", "hold"], /Port app is not proxied in session .*pause and kill work on any port/],
+      [["testApp", "--mode", "pause", "--count", "1"], /--count applies to fail, slow and hold/],
+      [["testApp", "--mode", "hold"], /Port testApp is not proxied in session .*pause and kill work on any port/],
       [["--release"], /Name the port whose held requests to release/],
       [["proxied", "--mode", "hold", "--clear"], /Choose one of --mode, --release or --clear/],
       [["proxied", "--release", "--clear"], /Choose one of --mode, --release or --clear/],
@@ -374,7 +370,7 @@ test("--no-outbound blocks the app and its children from outside hosts while loo
     assert.equal(variants.nullPath, "ELOCALDEV_OUTBOUND", "a null path is TCP, as Node treats it");
     assert.notEqual(variants.spelledV6Loopback, "ELOCALDEV_OUTBOUND", "0::1 is loopback");
     assert.equal(variants.mappedLoopback, "connected", "an IPv4-mapped loopback address is loopback");
-    await run("fault", blocked.id, "app", "--mode", "kill");
+    await run("fault", blocked.id, "testApp", "--mode", "kill");
     assert.equal(JSON.parse(await text(`${blocked.urls.app}/probe`)).net, "ELOCALDEV_OUTBOUND", "a restarted service keeps the policy");
 
     const open = await start("--parallel", "--project", root, "--adapter", faultsAdapter);

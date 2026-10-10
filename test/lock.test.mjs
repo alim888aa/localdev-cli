@@ -3,17 +3,24 @@ import { mkdtemp, rm } from "node:fs/promises";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
-import test from "node:test";
+import test, { after } from "node:test";
 
 // stateRoot and lockPort are read when dist/state.js loads, so point them at a temp state dir first.
 const state = await mkdtemp(path.join(os.tmpdir(), "local-cli-lock-"));
 process.env.LOCAL_CLI_STATE_DIR = state;
-const { lockPort, reserveSession } = await import("../dist/state.js");
+const { lockPort, removeOrphanTempDirs, reserveSession } = await import("../dist/state.js");
+
+// These sessions are never stopped; without their session dirs, the sweep removes their temp dirs.
+after(async () => {
+  await rm(path.join(state, "sessions"), { recursive: true, force: true });
+  await removeOrphanTempDirs();
+  await rm(state, { recursive: true, force: true });
+});
 
 test("a stray connection to the lock port cannot keep the lock from being released", async (t) => {
   t.after(() => rm(state, { recursive: true, force: true }));
   let client;
-  const reserved = reserveSession(["app"], (id, dir, ports) => ({
+  const reserved = reserveSession(["testApp"], (id, dir, ports) => ({
     id, fixture: "base", projectRoot: state, commit: null, adapterPath: "", sessionDir: dir, dataDir: path.join(dir, "data"),
     ports, urls: {}, processes: [], state: "failed", ownerPid: process.pid, createdAt: new Date().toISOString(),
   }), async () => {
@@ -40,7 +47,7 @@ test("a lock directory whose owner process died is reclaimed without a 30 s wait
   const dead = spawnSync(process.execPath, ["-e", "process.stdout.write(String(process.pid))"], { encoding: "utf8" }).stdout;
   await writeFile(path.join(lock, "owner.json"), JSON.stringify({ pid: Number(dead), time: Date.now(), token: "crashed-holder" }));
   const started = Date.now();
-  await reserveSession(["app"], (id, dir, ports) => ({
+  await reserveSession(["testApp"], (id, dir, ports) => ({
     id, fixture: "base", projectRoot: state, commit: null, adapterPath: "", sessionDir: dir, dataDir: path.join(dir, "data"),
     ports, urls: {}, processes: [], state: "failed", ownerPid: process.pid, createdAt: new Date().toISOString(),
   }));

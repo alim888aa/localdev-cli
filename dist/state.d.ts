@@ -2,7 +2,10 @@ import type { SessionReceipt } from "./types.js";
 export declare const stateRoot: string;
 /** The one session-ID check: IDs are UUIDs, and only an ID that passes may name a path under the state dir. */
 export declare function isSessionId(id: string): boolean;
-export declare function sessionPath(id: string): string;
+/** Delete a stopped session's temp dir (only once proven its own, see temp-dir), then its session dir. */
+export declare function removeSessionDirs({ id, tempDir }: SessionReceipt): Promise<void>;
+/** Remove this state dir's temp dirs whose session dir is gone. Never throws; see sweepOrphanTempDirs. */
+export declare function removeOrphanTempDirs(): Promise<void>;
 export declare function readReceipt(id: string): Promise<SessionReceipt>;
 /** A receipt, or null when there is none (stop removes it, so stopped and unknown IDs look alike). Other errors throw. */
 export declare function findReceipt(id: string): Promise<SessionReceipt | null>;
@@ -41,4 +44,6 @@ export declare function withStateLock<T>(fn: () => Promise<T>): Promise<T>;
  * private bind port (always from the random range); the others bind their public port. beforeAllocate runs with the
  * lock held (see withStateLock). Unique, non-empty port names are checked here, the one owner of that rule.
  */
-export declare function reserveSession(names: string[], makeReceipt: (id: string, dir: string, ports: Record<string, number>, bindPorts: Record<string, number>) => SessionReceipt, beforeAllocate?: (receipts: SessionReceipt[]) => Promise<void>, bindNames?: string[]): Promise<SessionReceipt>;
+export declare function reserveSession(names: string[], makeReceipt: (id: string, dir: string, ports: Record<string, number>, bindPorts: Record<string, number>) => SessionReceipt, beforeAllocate?: (receipts: SessionReceipt[]) => Promise<void>, bindNames?: string[]): Promise<SessionReceipt & {
+    tempDir: string;
+}>;

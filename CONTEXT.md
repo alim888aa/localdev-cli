@@ -15,7 +15,7 @@ The CLI owns the session; each project's adapter says what to run.
 ## Sessions
 
 - **Session**: one isolated run of a project checkout plus a fixture, named by
-  a UUID, with its own ports, data directory, logs and processes. Stored states
+  a UUID, with its own ports, data directory, temp dir, logs and processes. Stored states
   are `starting`, `ready`, `failed` and `stopping`. Status also derives
   `degraded` (ready, but a listener is unreachable or not owned) and `gone`
   (no receipt: stopped or unknown).
@@ -23,6 +23,20 @@ The CLI owns the session; each project's adapter says what to run.
   It is the source of truth for a session. Only `state` writes it, and every
   read-modify-write goes through `updateReceipt` (or `withReceipt` when the
   write must land before a side effect).
+- **Session temp dir**: `tempDir`, a short private directory
+  (`/tmp/lc-<hash of the canonical state dir>-<id>`, 0700) the CLI makes for
+  one session on every platform, so adapters can point `TMPDIR` at it; Unix
+  socket paths under the state directory pass macOS's 104-byte limit. The CLI
+  writes a `.localdev-session` **marker** inside it at creation (canonical
+  state dir and session ID). A temp dir is **proven** when its path is the one
+  for that canonical state dir and ID, `lstat` shows a real directory (never a
+  symlink) owned by this user, and its marker names the same state dir and ID.
+  `stop` removes a proven one and leaves anything else with a stderr line.
+  A startup whose chmod or marker write fails rolls back only the dir it just
+  made (see **Must never break**).
+  `startup` and `stop` also remove proven ones whose session directory is gone
+  (an **orphaned** temp dir). The `temp-dir` owner holds these rules. It is
+  never an adapter `cleanupPaths` entry.
 - **State lock**: the loopback-port mutex that serialises receipt changes and
   port reservation (`withStateLock`; the legacy directory is
   `allocation.lock`). Not reentrant. _Avoid_: "allocation lock" in new code.
@@ -36,6 +50,9 @@ The CLI owns the session; each project's adapter says what to run.
   loads and checks it; docs/adapter.md is its contract.
 - **Fixture**: named test data a session starts with. `defaultFixture` is used
   when none is named.
+  localdev's own test apps use `testApp`, and its `base` scratch client's web
+  service uses `fixtureWeb`. These port names select random ports, keeping
+  practice sessions outside the 3000–3010 range preferred by real `app`/`web` clients.
 - **Plan**: what `createSession` returns: services, an optional seed, URLs and
   a credentials file.
 - **Service**: a long-running command from the plan. The fault proxy is not a
@@ -126,8 +143,8 @@ Who asks for things, and how.
 Adapters rely on this contract (docs/adapter.md): a default export with
 `ports`, `defaultFixture`, optional `proxyPorts`, optional `cleanupPaths()` and
 `createSession(ctx)` returning services, a seed, URLs and a credentials file.
-`ctx` carries `id`, `fixture`, `projectRoot`, `sessionDir`, `dataDir`, `ports`
-and `bindPorts`. The CLI owns the env vars `LOCAL_CLI_STATE_DIR`,
+`ctx` carries `id`, `fixture`, `projectRoot`, `sessionDir`, `dataDir`,
+`tempDir`, `ports` and `bindPorts`. The CLI owns the env vars `LOCAL_CLI_STATE_DIR`,
 `LOCAL_CLI_LOCK_PORT` and `LOCALDEV_OUTBOUND_*`.
 
 ## How a fix reaches clients
@@ -168,7 +185,22 @@ from.
 - JSON on stdout for `startup`, `status`, `stop` and `fault` (DESIGN.md). `help`
   and `issue` print text.
 - Never signal a process whose identity isn't verified.
-- Never delete outside the session's own paths (the `cleanupPaths` guard).
+- Never delete outside the session's own paths (the `cleanupPaths` guard). The
+  one exception, approved by the owner on PR #37: the CLI's own session temp
+  dirs in `/tmp`. `stop` and the orphan sweep remove one only when it is
+  proven (see **Session temp dir**): the canonical (realpath) state dir and
+  ID give its exact path, `lstat` shows a directory owned by this user (a
+  symlink is never followed or removed), and the marker written at creation
+  names the same canonical state dir and ID (compared as written: a malformed
+  or unreadable marker fails the proof, and `stop` still finishes). The name's
+  hash alone never counts. The sweep also needs the session directory to be
+  gone. The one removal without a marker is startup's **rollback**, approved
+  on PR #37 too: when the chmod or marker write fails right after startup's
+  own fresh, non-recursive `mkdir`, the CLI may remove that dir only if
+  `lstat` still shows the same dev, inode and owner (no symlink, no
+  replacement). It unlinks at most the regular marker file that call wrote,
+  then `rmdir`s, never recursively. Anything else, or a failed cleanup, is
+  left in place, and the startup error names its path and why.
 - `status` never prints env, specs or credentials.
 
 ## Direction
