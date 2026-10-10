@@ -49,8 +49,11 @@ export default {
       while (!await fs.access(path.join(c.projectRoot, "release-" + c.id)).then(() => true, () => false))
         await new Promise(resolve => setTimeout(resolve, 20));
     }
+    let command = process.execPath;
+    if (c.fixture === "missing-command") command = "localdev-no-such-service-command";
+    if (c.fixture === "missing-path") command = path.join(c.projectRoot, "node_modules", ".bin", "missing-service");
     return { services: [
-      { name: "api", command: process.execPath, args: c.fixture === "service-error" ? ["-e", "process.exit(1)"] : [${JSON.stringify(path.join(repo, "test", "fault-server.mjs"))}, String(c.bindPorts.api), c.dataDir], readyPort: "api" },
+      { name: "api", command, args: c.fixture === "service-error" ? ["-e", "process.exit(1)"] : [${JSON.stringify(path.join(repo, "test", "fault-server.mjs"))}, String(c.bindPorts.api), c.dataDir], readyPort: "api" },
       { name: "web", command: process.execPath, args: [${JSON.stringify(path.join(repo, "test", "fault-server.mjs"))}, String(c.bindPorts[${JSON.stringify(portName)}]), c.dataDir], readyPort: ${JSON.stringify(portName)}, readyTimeoutMs: 5000 }
     ], seed: c.fixture === "seed-error" ? { command: process.execPath, args: ["-e", "process.exit(1)"] } : undefined, urls: { app: "http://127.0.0.1:" + c.ports[${JSON.stringify(portName)}] } };
   }
@@ -148,15 +151,30 @@ test("three consecutive collisions fail clearly and clean every abandoned attemp
   } finally { await w.cleanup(); }
 });
 
-for (const fixture of ["adapter-error", "service-error", "seed-error"])
+for (const fixture of ["adapter-error", "service-error", "seed-error", "missing-command", "missing-path"])
 test(`${fixture} fails without a collision retry`, async () => {
   const w = await world();
   try {
-    await assert.rejects(w.run("startup", fixture), /failed/);
+    const missing = fixture.startsWith("missing-");
+    const command = fixture === "missing-command" ? "localdev-no-such-service-command"
+      : fixture === "missing-path" ? path.join(w.project, "node_modules", ".bin", "missing-service") : process.execPath;
+    await assert.rejects(w.run("startup", fixture), error => {
+      assert.equal(error.code, 1);
+      assert.equal(error.stdout, "");
+      assert.match(error.stderr, /failed/);
+      if (missing || fixture === "service-error") {
+        assert.match(error.stderr, /api command exited \(code 1\) before port \d+ was ready/);
+        assert.ok(error.stderr.includes(`command: ${command}`));
+        if (missing) assert.ok(error.stderr.includes(`spawn ${command} ENOENT`));
+        else assert.ok(!error.stderr.includes("ENOENT"));
+      }
+      return true;
+    });
     assert.equal((await fs.readFile(path.join(w.project, "calls"), "utf8")).trim().split("\n").length, 1);
     const [failed] = await w.run("status");
     assert.equal(failed.state, "failed");
     assert.ok(failed.processes.every(p => !p.alive));
+    if (missing) assert.ok(failed.error.includes(`spawn ${command} ENOENT`));
     assert.ok(!(await fs.readdir(w.project)).some(file => file.startsWith(".local-cli-")));
   } finally { await w.cleanup(); }
 });
