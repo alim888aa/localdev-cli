@@ -179,7 +179,9 @@ test("startup waits for normal stop's directory removal before the recovery swee
   await stopping.event("removing");
   const starting = w.start("observe", "startup");
   await starting.event("waiting");
-  assert.equal((await lstat(path.join(w.state, "sessions", first.id))).isDirectory(), true);
+  const [retained] = await w.run("status", first.id);
+  assert.equal(retained.id, first.id);
+  assert.equal(retained.state, "stopping");
   stopping.process.send("release");
   const stopped = await stopping.done;
   assert.equal(stopped.code, 0, stopped.stderr);
