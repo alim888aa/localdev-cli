@@ -159,7 +159,11 @@ the adapter writes anything. A killed startup can therefore be cleaned with
 
 The CLI passes every allocated port to the adapter. Adapters must pass those
 ports to **every** service and seed command; a service with a hard-coded port can
-still collide. A session's `dataDir` belongs to that session only. The adapter
+still collide. A session's `dataDir` belongs to that session only. Its `tempDir`
+is a short private directory (`/tmp/lc-<hash>-<session-id>`, mode 0700) for
+`TMPDIR`: Unix sockets under `dataDir` can pass macOS's 104-byte path limit.
+`status` shows it, and `stop <id>` removes it once its `.localdev-session`
+marker proves it is that session's. The adapter
 must keep fixtures local and never print passwords into service or seed logs.
 If it creates credentials, put them in a `0600` file inside `sessionDir` and
 return only its path as `credentialsFile`.
@@ -170,7 +174,9 @@ that listens on a loopback port derived from the state directory (10000–19999)
 the operating system frees it if the holder dies, so it can never go stale. If
 another program uses that port, set `LOCAL_CLI_LOCK_PORT`, and set the same
 value for every localdev process that shares the state directory. `stop <id>` removes only that session's
-processes and directory. Each service and seed runs under a persistent process
+processes, directory and temp dir. `startup` and `stop` also remove temp dirs
+whose session directory is gone (for example, a session an older localdev
+stopped). Each service and seed runs under a persistent process
 group supervisor, so `stop` can still kill a server left behind by an exited
 launcher. A guard in the same group keeps ownership verifiable if the supervisor
 itself crashes. `status` probes each service port and reports `degraded` if one

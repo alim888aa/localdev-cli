@@ -9,7 +9,8 @@ import { outboundRefusals, refusalExplanation, type OutboundPolicy } from "./out
 import { isSameProcess, ownIdentity } from "./process-table.js";
 import { countUnit, proxyLaunch } from "./proxy.js";
 import {
-  bindPortsOf, findReceipt, isSessionId, reserveSession, SessionGoneError, sessionPath, updateLockedReceipt, updateReceipt,
+  bindPortsOf, findReceipt, isSessionId, removeOrphanTempDirs, removeSessionDirs, reserveSession, SessionGoneError,
+  updateLockedReceipt, updateReceipt,
 } from "./state.js";
 import { processAlive, processHealth, spawnSupervised, stopService, waitForSeed } from "./supervised.js";
 import type { OwnedProcess, ServiceSpec, SessionReceipt } from "./types.js";
@@ -150,7 +151,7 @@ export async function startSession(options: StartOptions): Promise<object> {
   const replaceId = typeof options.replace === "string" ? options.replace : undefined;
   if (replaceId && !isSessionId(replaceId)) throw new Error(`Invalid --replace session ID: ${replaceId}`);
   let choice: StartupChoice = { parallel, replace: Boolean(options.replace), replaceId };
-  let receipt: SessionReceipt;
+  let receipt: Awaited<ReturnType<typeof reserveSession>>;
   for (let attempt = 0; ; attempt++) {
     for (;;) {
       try {
@@ -194,10 +195,8 @@ export async function startSession(options: StartOptions): Promise<object> {
       }
     }
     try {
-      const context = {
-        id: receipt.id, fixture, projectRoot: root,
-        sessionDir: receipt.sessionDir, dataDir: receipt.dataDir, ports: receipt.ports, bindPorts: bindPortsOf(receipt),
-      };
+      const { id, sessionDir, dataDir, tempDir, ports } = receipt;
+      const context = { id, fixture, projectRoot: root, sessionDir, dataDir, tempDir, ports, bindPorts: bindPortsOf(receipt) };
       receipt.cleanupPaths = adapter.cleanupPaths?.(context) ?? [];
       checkCleanupPaths(receipt.cleanupPaths, receipt.id, root);
       await saveStarting(receipt);
@@ -286,6 +285,7 @@ export async function describeSession(receipt: SessionReceipt): Promise<object> 
     ...(receipt.outbound === "deny" ? { outboundRefused: outboundRefusals(receipt.sessionDir).length } : {}),
     urls: receipt.urls,
     dataDir: receipt.dataDir,
+    tempDir: receipt.tempDir,
     credentialsFile: receipt.credentialsFile,
     logs: receipt.processes.map(({ name, log }) => ({ name, path: log })),
     processes,
@@ -297,10 +297,10 @@ export async function describeSession(receipt: SessionReceipt): Promise<object> 
 
 /** `localdev stop`: stop one session; a stopped or unknown ID is reported as already gone. */
 export async function stopSession(id: string): Promise<{ id: string; stopped: true; alreadyGone?: true }> {
+  await removeOrphanTempDirs();
   const receipt = await updateReceipt(id, markStopping).catch(nullIfGone);
-  if (!receipt) return { id, stopped: true, alreadyGone: true };
-  await stopReceipt(receipt);
-  return { id, stopped: true };
+  if (receipt) await stopReceipt(receipt);
+  return receipt ? { id, stopped: true } : { id, stopped: true, alreadyGone: true };
 }
 
 function nullIfGone(error: unknown): null {
@@ -329,5 +329,5 @@ async function stopReceipt(receipt: SessionReceipt, { lockHeld = false } = {}): 
     }
   }
   await cleanupPaths(receipt);
-  await fs.rm(sessionPath(id), { recursive: true, force: true });
+  await removeSessionDirs(receipt);
 }

@@ -8,7 +8,7 @@ import test from "node:test";
 
 const root = await fs.mkdtemp(path.join(os.tmpdir(), "localdev-preferred-ports-"));
 process.env.LOCAL_CLI_STATE_DIR = root;
-const { reserveSession } = await import("../dist/state.js");
+const { removeOrphanTempDirs, reserveSession } = await import("../dist/state.js");
 function receipt(id, dir, ports) {
   return { id, sessionDir: dir, dataDir: path.join(dir, "data"), ports,
     projectRoot: "/fixture", fixture: "ports", adapterPath: "/fixture/adapter.mjs",
@@ -61,6 +61,9 @@ test("app preference skips live listeners, serializes worktrees and falls back w
     assert.equal(new Set(allPorts).size, allPorts.length);
   } finally {
     for (const server of listeners) if (server.listening) await close(server);
+    // These sessions are never stopped; without their session dirs, the sweep removes their temp dirs.
+    await fs.rm(path.join(root, "sessions"), { recursive: true, force: true });
+    await removeOrphanTempDirs();
     await fs.rm(root, { recursive: true, force: true });
   }
 });

@@ -8,7 +8,7 @@ import { launchService, StartupPortCollisionError } from "./launch.js";
 import { outboundRefusals, refusalExplanation } from "./outbound.js";
 import { isSameProcess, ownIdentity } from "./process-table.js";
 import { countUnit, proxyLaunch } from "./proxy.js";
-import { bindPortsOf, findReceipt, isSessionId, reserveSession, SessionGoneError, sessionPath, updateLockedReceipt, updateReceipt, } from "./state.js";
+import { bindPortsOf, findReceipt, isSessionId, removeOrphanTempDirs, removeSessionDirs, reserveSession, SessionGoneError, updateLockedReceipt, updateReceipt, } from "./state.js";
 import { processAlive, processHealth, spawnSupervised, stopService, waitForSeed } from "./supervised.js";
 class DuplicateSessionError extends Error {
     matches;
@@ -175,10 +175,8 @@ export async function startSession(options) {
             }
         }
         try {
-            const context = {
-                id: receipt.id, fixture, projectRoot: root,
-                sessionDir: receipt.sessionDir, dataDir: receipt.dataDir, ports: receipt.ports, bindPorts: bindPortsOf(receipt),
-            };
+            const { id, sessionDir, dataDir, tempDir, ports } = receipt;
+            const context = { id, fixture, projectRoot: root, sessionDir, dataDir, tempDir, ports, bindPorts: bindPortsOf(receipt) };
             receipt.cleanupPaths = adapter.cleanupPaths?.(context) ?? [];
             checkCleanupPaths(receipt.cleanupPaths, receipt.id, root);
             await saveStarting(receipt);
@@ -273,6 +271,7 @@ export async function describeSession(receipt) {
         ...(receipt.outbound === "deny" ? { outboundRefused: outboundRefusals(receipt.sessionDir).length } : {}),
         urls: receipt.urls,
         dataDir: receipt.dataDir,
+        tempDir: receipt.tempDir,
         credentialsFile: receipt.credentialsFile,
         logs: receipt.processes.map(({ name, log }) => ({ name, path: log })),
         processes,
@@ -283,11 +282,11 @@ export async function describeSession(receipt) {
 }
 /** `localdev stop`: stop one session; a stopped or unknown ID is reported as already gone. */
 export async function stopSession(id) {
+    await removeOrphanTempDirs();
     const receipt = await updateReceipt(id, markStopping).catch(nullIfGone);
-    if (!receipt)
-        return { id, stopped: true, alreadyGone: true };
-    await stopReceipt(receipt);
-    return { id, stopped: true };
+    if (receipt)
+        await stopReceipt(receipt);
+    return receipt ? { id, stopped: true } : { id, stopped: true, alreadyGone: true };
 }
 function nullIfGone(error) {
     if (error instanceof SessionGoneError)
@@ -314,5 +313,5 @@ async function stopReceipt(receipt, { lockHeld = false } = {}) {
         }
     }
     await cleanupPaths(receipt);
-    await fs.rm(sessionPath(id), { recursive: true, force: true });
+    await removeSessionDirs(receipt);
 }

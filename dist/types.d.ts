@@ -20,6 +20,12 @@ export interface SessionContext {
     projectRoot: string;
     sessionDir: string;
     dataDir: string;
+    /**
+     * A short, private (0700) temp dir for this session alone, for TMPDIR: Unix sockets made under dataDir can pass
+     * the macOS 104-byte path limit. The CLI creates it and removes it with the session, once its `.localdev-session`
+     * marker (keep it) proves it is the session's.
+     */
+    tempDir: string;
     /** Ports clients and URLs use. */
     ports: Record<string, number>;
     /** Ports services listen on; differs from ports only for proxyPorts names. */
@@ -109,6 +115,8 @@ export interface SessionReceipt {
     adapterPath: string;
     sessionDir: string;
     dataDir: string;
+    /** The session's SessionContext.tempDir; missing in receipts from before it existed. */
+    tempDir?: string;
     ports: Record<string, number>;
     /** Missing in receipts from before the fault proxy; then services bind ports. */
     bindPorts?: Record<string, number>;

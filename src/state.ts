@@ -4,6 +4,7 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { processExists } from "./process-table.js";
+import { makeTempDir, removeTempDir, sweepOrphanTempDirs, tempDirFor } from "./temp-dir.js";
 import type { SessionReceipt } from "./types.js";
 
 // The one owner of session state on disk: receipts, the allocation lock that serialises their read-modify-writes,
@@ -20,9 +21,23 @@ export function isSessionId(id: string): boolean {
   return /^[0-9a-f-]{36}$/.test(id);
 }
 
-export function sessionPath(id: string): string {
+function sessionPath(id: string): string {
   if (!isSessionId(id)) throw new Error("Invalid session ID");
   return path.join(sessionsRoot, id);
+}
+
+/** Delete a stopped session's temp dir (only once proven its own, see temp-dir), then its session dir. */
+export async function removeSessionDirs({ id, tempDir }: SessionReceipt): Promise<void> {
+  if (tempDir) await removeTempDir(stateRoot, id, tempDir);
+  await fs.rm(sessionPath(id), { recursive: true, force: true });
+}
+
+/** Remove this state dir's temp dirs whose session dir is gone. Never throws; see sweepOrphanTempDirs. */
+export function removeOrphanTempDirs(): Promise<void> {
+  return sweepOrphanTempDirs(stateRoot, (id) => fs.lstat(sessionPath(id)).then(() => true, (error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return false;
+    throw error;
+  }));
 }
 
 export async function readReceipt(id: string): Promise<SessionReceipt> {
@@ -200,12 +215,13 @@ export async function reserveSession(
   makeReceipt: (id: string, dir: string, ports: Record<string, number>, bindPorts: Record<string, number>) => SessionReceipt,
   beforeAllocate?: (receipts: SessionReceipt[]) => Promise<void>,
   bindNames: string[] = [],
-): Promise<SessionReceipt> {
+): Promise<SessionReceipt & { tempDir: string }> {
   if (names.length === 0 || new Set(names).size !== names.length) {
     throw new Error("Adapter must declare unique port names");
   }
   const release = await acquireLock();
   try {
+    await removeOrphanTempDirs();
     if (beforeAllocate) await beforeAllocate(await listReceipts());
     const used = new Set((await listReceipts())
       .filter((item) => item.state === "starting" || item.state === "ready" || item.state === "stopping")
@@ -237,9 +253,16 @@ export async function reserveSession(
     }
     const id = randomUUID();
     const dir = sessionPath(id);
-    await fs.mkdir(path.join(dir, "data"), { recursive: true, mode: 0o700 });
-    const receipt = makeReceipt(id, dir, ports, { ...ports, ...bindPorts });
-    await writeReceipt(receipt);
+    const receipt = { ...makeReceipt(id, dir, ports, { ...ports, ...bindPorts }), tempDir: await tempDirFor(stateRoot, id) };
+    try {
+      await fs.mkdir(path.join(dir, "data"), { recursive: true, mode: 0o700 });
+      await writeReceipt(receipt);
+      // Last, so the receipt always names it. A failed reservation is undone; a temp dir it made is then an orphan.
+      await makeTempDir(stateRoot, id);
+    } catch (error) {
+      await fs.rm(dir, { recursive: true, force: true });
+      throw error;
+    }
     return receipt;
   } finally {
     await release();

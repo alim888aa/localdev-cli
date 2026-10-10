@@ -30,7 +30,6 @@ async function session(prefix, { longStateDir = false } = {}) {
   // A state dir this long puts proxy.sock's absolute path past macOS's 104-byte socket path limit.
   const state = longStateDir ? path.join(temporary, "s".repeat(80)) : temporary;
   const env = { ...process.env, LOCAL_CLI_STATE_DIR: state };
-  const started = [];
   const run = async (...args) => {
     const { stdout } = await exec(process.execPath, [cli, ...args], { env, cwd: root });
     return JSON.parse(stdout);
@@ -42,14 +41,11 @@ async function session(prefix, { longStateDir = false } = {}) {
     const exited = new Promise((resolve) => child.once("exit", (code) => resolve({ code, stderr })));
     return { child, exited };
   };
-  const start = async (...args) => {
-    const receipt = await run("startup", ...args);
-    started.push(receipt.id);
-    return receipt;
-  };
+  const start = (...args) => run("startup", ...args);
   const statusOf = async (id) => (await run("status", id))[0];
   const cleanup = async () => {
-    for (const id of started) await run("stop", id).catch(() => undefined);
+    // Every session, failed startups included: each keeps its temp dir in /tmp until stopped.
+    for (const { id } of await run("status").catch(() => [])) await run("stop", id).catch(() => undefined);
     await rm(temporary, { recursive: true, force: true });
   };
   return { state, temporary, run, spawnCli, start, statusOf, cleanup };
