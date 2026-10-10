@@ -17,7 +17,7 @@
 // is pure so they can be tested against made-up label states.
 
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -31,7 +31,21 @@ const HOUR = 60 * 60 * 1000;
 const LIST_LIMIT = 1000;
 
 const isStatus = (label) => ISSUE_STATUSES.includes(label) || PR_STATUSES.includes(label) || label.startsWith("deployed:");
-const statusOf = (item) => item.labels.find(isStatus);
+const statusOf = (item) => {
+  const statuses = item.labels.filter(isStatus);
+  return statuses.length === 1 ? statuses[0] : null;
+};
+const statusWrite = (item, status) => ({
+  do: "label", issue: item.number, number: item.number,
+  expectedStatuses: item.labels.filter(isStatus),
+  labels: [...item.labels.filter((l) => !isStatus(l)), status],
+});
+const commentAction = (number, body) => ({ do: "comment", issue: number, number, body: `Author: dispatch\n\n${body}` });
+const statusConflict = (item) => {
+  const statuses = item.labels.filter(isStatus);
+  const reason = `Can't classify #${item.number}: multiple status labels (${statuses.join(", ")}); started nothing. Manager must decide the status.`;
+  return { reason, github: [commentAction(item.number, reason), statusWrite(item, "needs-manager")] };
+};
 const priority = (item) => {
   const p = item.labels.find((l) => /^p[0-2]$/.test(l));
   return p ? Number(p[1]) : 2;
@@ -125,12 +139,26 @@ export function plan(state, { finished = null, tick = false } = {}) {
     branch && branch !== defaultBranch && !featureBranches.has(branch) && !openHeads.has(branch);
 
   const setStatus = (item, status, kind) => {
-    const labels = [...item.labels.filter((l) => !isStatus(l)), status];
-    github.push({ do: "label", issue: item.number, number: item.number, labels });
-    item.labels = labels;
+    const action = statusWrite(item, status);
+    github.push(action);
+    item.labels = action.labels;
     notes.push(`${kind} #${item.number} → ${status}`);
   };
-  const comment = (number, body) => github.push({ do: "comment", issue: number, number, body: `Author: dispatch\n\n${body}` });
+  const comment = (number, body) => github.push(commentAction(number, body));
+
+  // Conflicting statuses cannot classify work, even after routing the item
+  // to the manager. Nothing for it starts or resumes during this wake.
+  const unclassifiable = new Set();
+  for (const item of [...issues, ...prs, ...(state.closedCommented ?? [])]) {
+    const statuses = item.labels.filter(isStatus);
+    if (statuses.length < 2) continue;
+    unclassifiable.add(item.number);
+    const conflict = statusConflict(item);
+    notes.push(conflict.reason);
+    github.push(...conflict.github);
+    item.labels = conflict.github[1].labels;
+    notes.push(`${prs.includes(item) ? "PR" : "issue"} #${item.number} → needs-manager`);
+  }
 
   // 1. Clean up after threads that are done: the issue closed, or the PR the
   // thread worked on closed unmerged after it started (a re-plan). Only the
@@ -138,7 +166,7 @@ export function plan(state, { finished = null, tick = false } = {}) {
   // branch is the last copy of that work.
   const cleaned = new Set();
   for (const [n, t] of threadFor) {
-    if (unresolved.length || holding.has(n) || openPrsFor(n).length) continue;
+    if (unresolved.length || unclassifiable.has(n) || holding.has(n) || openPrsFor(n).length) continue;
     const issueClosed = closedAs(n) !== null;
     const replacedPr = closedPrs.find(
       (p) => links(p.body, "Closes").includes(n) && !p.merged && p.closedAt && t.createdAt && t.createdAt < p.closedAt,
@@ -162,6 +190,7 @@ export function plan(state, { finished = null, tick = false } = {}) {
   // 2. Unblock. Blockers are the `Blocked by` lines gathered per item.
   const unblockedPrs = new Set();
   for (const item of [...issues, ...prs]) {
+    if (unclassifiable.has(item.number)) continue;
     if (!item.labels.includes("blocked")) continue;
     const isPr = prs.includes(item);
     const blockers = item.blockers ?? [];
@@ -213,7 +242,7 @@ export function plan(state, { finished = null, tick = false } = {}) {
   // One place decides whether issue n may start, so no path can give an
   // issue a second worker or spend past the budget.
   const canStart = (n, item) =>
-    free > 0 && !started.has(n) && !holding.has(n) && !(unresolved.length && threadFor.has(n)) && !(overBudget && priority(item) > 0);
+    free > 0 && !unclassifiable.has(n) && !unclassifiable.has(item.number) && !started.has(n) && !holding.has(n) && !(unresolved.length && threadFor.has(n)) && !(overBudget && priority(item) > 0);
   const startOn = (n, { branch, baseRef, message }) => {
     const t = threadFor.get(n);
     if (t && !cleaned.has(n)) {
@@ -327,11 +356,13 @@ export function plan(state, { finished = null, tick = false } = {}) {
     // A parent run starts a worker and a verifier, so the budget holds it
     // like any other start.
     for (const p of issues.filter((i) => i.labels.includes("type:plan") && !(overBudget && priority(i) > 0))) {
+      if (unclassifiable.has(p.number)) continue;
       const branch = refs[p.number]?.featureBranch;
       if (!branch || !remoteBranches.includes(branch)) continue;
       const openChild = [...issues, ...prs].some((x) => x.headRefName !== branch && links(x.body, "Part of").includes(p.number));
       if (openChild) continue;
       const parent = prs.find((x) => x.headRefName === branch);
+      if (parent && unclassifiable.has(parent.number)) continue;
       const live = workers.some((t) => t.title === `Factory · parent #${p.number}` && holds(t));
       let key = null;
       if (live) key = null;
@@ -501,25 +532,56 @@ function worktreeIsSafe(path, merged, root) {
   return onRemote ? null : "its commits aren't on origin";
 }
 
-function apply(state, result) {
+export function apply(state, result, runGh = gh) {
   const { repo, root } = state;
   const done = [];
   const failed = new Set();
-  for (const a of result.github) {
+  for (let a of result.github) {
     if ((a.issue != null && failed.has(a.issue)) || (a.after && failed.has(a.after))) {
       done.push({ ...a, ok: false, error: "skipped: an earlier step for this issue failed" });
       continue;
     }
     try {
       if (a.do === "label") {
-        // One PUT replaces the whole set, so a half-done change can't leave
-        // an item with no status. Whether a human comment is waiting is read
-        // fresh, since one may have come or been answered since gather.
-        const now = ghJson("api", `repos/${repo}/issues/${a.number}/labels`).map((l) => l.name);
-        const labels = [...a.labels.filter((l) => l !== "human-comment"), ...(now.includes("human-comment") ? ["human-comment"] : [])];
-        gh("api", "-X", "PUT", `repos/${repo}/issues/${a.number}/labels`, ...labels.flatMap((l) => ["-f", `labels[]=${l}`]));
+        // Compare the planned status with a fresh read before replacing it,
+        // carrying every other current label. GitHub has no CAS, so verify
+        // the write before releasing any action that depends on it.
+        const endpoint = `repos/${repo}/issues/${a.number}/labels`;
+        const readLabels = () => JSON.parse(runGh("api", endpoint, "--paginate", "--slurp")).flat().map((l) => l.name);
+        let now = readLabels();
+        const current = now.filter(isStatus);
+        const matches = current.length === a.expectedStatuses.length && current.every((l) => a.expectedStatuses.includes(l));
+        // A planned conflict resolution already has a successful comment
+        // immediately before it. A new conflict needs its own comment first.
+        if (current.length > 1 && !(matches && a.labels.includes("needs-manager"))) {
+          const conflict = statusConflict({ number: a.number, labels: now });
+          failed.add(a.issue);
+          done.push({ ...a, ok: false, error: conflict.reason });
+          result.notes.push(conflict.reason);
+          result.notes.push(`#${a.number} held: status conflict; next wake will re-plan from fresh state`);
+          a = conflict.github[0];
+          runGh("api", `repos/${repo}/issues/${a.number}/comments`, "-f", `body=${a.body}`);
+          done.push({ ...a, ok: true });
+          a = conflict.github[1];
+          // The comment must succeed before resolving the conflict. Re-read
+          // afterwards in case the manager changed the status meanwhile.
+          now = readLabels();
+          const afterComment = now.filter(isStatus);
+          if (afterComment.length !== a.expectedStatuses.length || !afterComment.every((l) => a.expectedStatuses.includes(l))) {
+            throw new Error(`status changed after conflict comment: expected ${a.expectedStatuses.join(", ")}, found ${afterComment.join(", ") || "no status"}`);
+          }
+        } else if (!matches) {
+          throw new Error(`status changed since gather: expected ${a.expectedStatuses.join(", ") || "no status"}, found ${current.join(", ") || "no status"}`);
+        }
+        const status = a.labels.find(isStatus);
+        const labels = [...now.filter((l) => !isStatus(l)), status];
+        runGh("api", "-X", "PUT", endpoint, ...labels.flatMap((l) => ["-f", `labels[]=${l}`]));
+        const actual = readLabels().filter(isStatus);
+        if (actual.length !== 1 || actual[0] !== status) {
+          throw new Error(`status verification failed: expected only ${status}, found ${actual.join(", ") || "no status"}`);
+        }
       } else if (a.do === "comment") {
-        gh("api", `repos/${repo}/issues/${a.number}/comments`, "-f", `body=${a.body}`);
+        runGh("api", `repos/${repo}/issues/${a.number}/comments`, "-f", `body=${a.body}`);
       } else if (a.do === "remove-worktree") {
         const unsafe = worktreeIsSafe(a.path, a.merged, root);
         if (unsafe) throw new Error(`kept ${a.path}: ${unsafe}`);
@@ -537,10 +599,13 @@ function apply(state, result) {
       done.push({ ...a, ok: true });
     } catch (e) {
       if (a.issue != null) failed.add(a.issue);
-      done.push({ ...a, ok: false, error: String(e.stderr || e.message).trim().split("\n")[0] });
+      const error = String(e.stderr || e.message).trim().split("\n")[0];
+      done.push({ ...a, ok: false, error });
+      if (a.do === "label") result.notes.push(`#${a.number} held: ${error}; next wake will re-plan from fresh state`);
     }
   }
-  return { done, failed };
+  const isHeld = (a) => (a.issue != null && failed.has(a.issue)) || (a.after && failed.has(a.after));
+  return { done, failed, held: result.t3.filter(isHeld), t3: result.t3.filter((a) => !isHeld(a)) };
 }
 
 async function main() {
@@ -584,17 +649,22 @@ async function main() {
   const result = plan(state, { finished, tick });
   const out = { ...result };
   if (args.includes("--apply")) {
-    const { done, failed } = apply(state, result);
+    const { done, held, t3 } = apply(state, result);
     out.github = done;
     // T3 steps for an issue whose GitHub steps failed wait for the next wake.
-    const isHeld = (a) => (a.issue != null && failed.has(a.issue)) || (a.after && failed.has(a.after));
-    out.held = result.t3.filter(isHeld);
-    out.t3 = result.t3.filter((a) => !isHeld(a));
+    out.held = held;
+    out.t3 = t3;
   }
   console.log(JSON.stringify(out, null, 2));
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url))
+let entryPath;
+try {
+  entryPath = process.argv[1] && realpathSync(process.argv[1]);
+} catch {
+  // A non-file entry argument means this module is being imported.
+}
+if (entryPath === realpathSync(fileURLToPath(import.meta.url)))
   main().catch((e) => {
     console.error(e);
     process.exit(1);

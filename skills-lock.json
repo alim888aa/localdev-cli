@@ -17,7 +17,7 @@
       "source": "alim888aa/agent-org",
       "sourceType": "github",
       "skillPath": "skills/dispatch/SKILL.md",
-      "computedHash": "d09969fb131edb3b32178b8f77cc49acf3926399b22c0cf0767244f8a07b8c44"
+      "computedHash": "cf9247c18d41dd3c86ec7132757da10d586f9dbab2e8354ec0d8ac75f00f035a"
     },
     "edge-case-hunter": {
       "source": "alim888aa/agent-org",
@@ -41,7 +41,7 @@
       "source": "alim888aa/agent-org",
       "sourceType": "github",
       "skillPath": "skills/factory-workflow/SKILL.md",
-      "computedHash": "9c16ab5e177b87d9b8208c59186596c08a914db5c8aa9159515090f0d5e47757"
+      "computedHash": "9827b231b7d3880ae5d8c5831c662d9fec81c729453cf6c0027caf49e2d0d5ce"
     },
     "issue-maker": {
       "source": "alim888aa/agent-org",
@@ -53,13 +53,13 @@
       "source": "alim888aa/agent-org",
       "sourceType": "github",
       "skillPath": "skills/manager/SKILL.md",
-      "computedHash": "8bf980e616fa8f9e6856b1cc36d48909955b647cef1ba7b2286c37ba12087140"
+      "computedHash": "05c42618342617f3d69e0c935f89e0dfc403a4b3ca8e6cd90fbb36e955461418"
     },
     "owner": {
       "source": "alim888aa/agent-org",
       "sourceType": "github",
       "skillPath": "skills/owner/SKILL.md",
-      "computedHash": "e4d5f67dd4a3232ec34854f84af19c6f35a72fc9d6e3a6f771d97d1c6798597b"
+      "computedHash": "7ff3b627f5403340df06964ac3732d597effefc1150c61eb3f0f8eb39969cb21"
     },
     "researcher": {
       "source": "alim888aa/agent-org",
@@ -89,13 +89,13 @@
       "source": "alim888aa/agent-org",
       "sourceType": "github",
       "skillPath": "skills/setup-factory/SKILL.md",
-      "computedHash": "9b30e1aa48674b5d4fab67eefc1c010133563970fbffb6ea4aa4534d4d061602"
+      "computedHash": "0725e8243b0170177327996577fdde0df88b7341fbc73672cfc47c837899a4ce"
     },
     "triage": {
       "source": "alim888aa/agent-org",
       "sourceType": "github",
       "skillPath": "skills/triage/SKILL.md",
-      "computedHash": "9ceb82c729cde7424d1707fc1078b859b395b6ee950214b56645555beb39c3d8"
+      "computedHash": "969e9dcfe1a39399b09710f6451d5303b6c15c4d87cdfd9ecb50e87a760b6dd6"
     },
     "upkeep": {
       "source": "alim888aa/agent-org",
