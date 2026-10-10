@@ -157,7 +157,7 @@ test(`${fixture} fails without a collision retry`, async () => {
   try {
     const missing = fixture.startsWith("missing-");
     const command = fixture === "missing-command" ? "localdev-no-such-service-command"
-      : fixture === "missing-path" ? path.join(w.project, "node_modules", ".bin", "missing-service") : process.execPath;
+      : fixture === "missing-path" ? path.join(await fs.realpath(w.project), "node_modules", ".bin", "missing-service") : process.execPath;
     await assert.rejects(w.run("startup", fixture), error => {
       assert.equal(error.code, 1);
       assert.equal(error.stdout, "");
