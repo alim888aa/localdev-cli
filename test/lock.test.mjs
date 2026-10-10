@@ -20,7 +20,7 @@ after(async () => {
 test("a stray connection to the lock port cannot keep the lock from being released", async (t) => {
   t.after(() => rm(state, { recursive: true, force: true }));
   let client;
-  const reserved = reserveSession(["app"], (id, dir, ports) => ({
+  const reserved = reserveSession(["testApp"], (id, dir, ports) => ({
     id, fixture: "base", projectRoot: state, commit: null, adapterPath: "", sessionDir: dir, dataDir: path.join(dir, "data"),
     ports, urls: {}, processes: [], state: "failed", ownerPid: process.pid, createdAt: new Date().toISOString(),
   }), async () => {
@@ -47,7 +47,7 @@ test("a lock directory whose owner process died is reclaimed without a 30 s wait
   const dead = spawnSync(process.execPath, ["-e", "process.stdout.write(String(process.pid))"], { encoding: "utf8" }).stdout;
   await writeFile(path.join(lock, "owner.json"), JSON.stringify({ pid: Number(dead), time: Date.now(), token: "crashed-holder" }));
   const started = Date.now();
-  await reserveSession(["app"], (id, dir, ports) => ({
+  await reserveSession(["testApp"], (id, dir, ports) => ({
     id, fixture: "base", projectRoot: state, commit: null, adapterPath: "", sessionDir: dir, dataDir: path.join(dir, "data"),
     ports, urls: {}, processes: [], state: "failed", ownerPid: process.pid, createdAt: new Date().toISOString(),
   }));

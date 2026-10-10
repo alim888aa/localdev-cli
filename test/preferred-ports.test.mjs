@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { once } from "node:events";
 import fs from "node:fs/promises";
 import net from "node:net";
 import os from "node:os";
@@ -8,7 +7,7 @@ import test from "node:test";
 
 const root = await fs.mkdtemp(path.join(os.tmpdir(), "localdev-preferred-ports-"));
 process.env.LOCAL_CLI_STATE_DIR = root;
-const { removeOrphanTempDirs, reserveSession } = await import("../dist/state.js");
+const { removeOrphanTempDirs, removeSessionDirs, reserveSession } = await import("../dist/state.js");
 function receipt(id, dir, ports) {
   return { id, sessionDir: dir, dataDir: path.join(dir, "data"), ports,
     projectRoot: "/fixture", fixture: "ports", adapterPath: "/fixture/adapter.mjs",
@@ -16,52 +15,52 @@ function receipt(id, dir, ports) {
     createdAt: new Date().toISOString() };
 }
 
-async function listener(port) {
-  const server = net.createServer();
-  try {
-    server.listen(port, "127.0.0.1");
-    await once(server, "listening");
-    return server;
-  } catch (error) {
-    if (error.code !== "EADDRINUSE") throw error;
-    return null;
-  }
-}
-async function close(server) {
-  if (server) await new Promise((resolve, reject) => server.close(e => e ? reject(e) : resolve()));
-}
-
-test("app preference skips live listeners, serializes worktrees and falls back when full", async () => {
-  const available = [];
-  const listeners = [];
-  try {
-    // Discover the range without assuming a user's existing localhost ports are free.
-    for (let port = 3000; port <= 3010; port++) {
-      const server = await listener(port);
-      if (server) { available.push(port); listeners.push(server); }
+test("app preference skips occupied ports, serializes worktrees and falls back when full", async t => {
+  const range = Array.from({ length: 11 }, (_, i) => 3000 + i);
+  const occupied = new Set();
+  const probed = [];
+  const listen = net.Server.prototype.listen;
+  // Model only preferred-port probes; locks and random-port probes still use real sockets.
+  t.mock.method(net.Server.prototype, "listen", function (...args) {
+    const port = typeof args[0] === "object" ? args[0].port : args[0];
+    if (!range.includes(port)) return listen.apply(this, args);
+    probed.push(port);
+    if (occupied.has(port)) {
+      queueMicrotask(() => this.emit("error", Object.assign(new Error("Port occupied"), { code: "EADDRINUSE" })));
+    } else {
+      this.close = callback => { queueMicrotask(callback); return this; };
+      queueMicrotask(args.at(-1));
     }
-    if (available.length === 0) {
-      const r = await reserveSession(["app", "auth"], receipt);
-      assert.ok(r.ports.app >= 20000 && r.ports.app < 60000);
-      assert.ok(r.ports.auth >= 20000 && r.ports.auth < 60000);
-      return;
-    }
-    // Keep one external listener alive, release the rest for session allocation.
-    const externallyOccupied = available.shift();
-    for (const server of listeners.slice(1)) await close(server);
+    return this;
+  });
+  try {
+    const first = await reserveSession(["app"], receipt);
+    const second = await reserveSession(["web"], receipt);
+    assert.equal(first.ports.app, 3000);
+    assert.equal(second.ports.web, 3001);
+    await removeSessionDirs(first);
+    await removeSessionDirs(second);
+    occupied.add(3000);
+    occupied.add(3004);
+    const available = range.filter(port => !occupied.has(port));
     const results = await Promise.all(Array.from({ length: available.length + 2 }, (_, i) =>
       reserveSession([i % 2 ? "app" : "web", "auth"], receipt)));
     const appPorts = results.map(r => r.ports.app ?? r.ports.web);
     assert.equal(new Set(appPorts).size, results.length);
-    assert.ok(!appPorts.includes(externallyOccupied));
+    assert.ok(appPorts.every(port => !occupied.has(port)));
     assert.deepEqual(appPorts.filter(p => p >= 3000 && p <= 3010).sort((a,b) => a-b), available);
     assert.equal(appPorts.filter(p => p >= 20000 && p < 60000).length, 2);
     assert.ok(results.every(r => r.ports.auth >= 20000 && r.ports.auth < 60000));
     const allPorts = results.flatMap(r => Object.values(r.ports));
     assert.equal(new Set(allPorts).size, allPorts.length);
+    for (const result of results) await removeSessionDirs(result);
+    for (const port of range) occupied.add(port);
+    probed.length = 0;
+    const fallback = await reserveSession(["app", "auth"], receipt);
+    assert.deepEqual(probed, range);
+    assert.ok(fallback.ports.app >= 20000 && fallback.ports.app < 60000);
+    assert.ok(fallback.ports.auth >= 20000 && fallback.ports.auth < 60000);
   } finally {
-    for (const server of listeners) if (server.listening) await close(server);
-    // These sessions are never stopped; without their session dirs, the sweep removes their temp dirs.
     await fs.rm(path.join(root, "sessions"), { recursive: true, force: true });
     await removeOrphanTempDirs();
     await fs.rm(root, { recursive: true, force: true });

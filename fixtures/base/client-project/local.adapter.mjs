@@ -12,7 +12,8 @@ import path from "node:path";
 const fixtures = ["base", "seed-fails"];
 
 export default {
-  ports: ["web", "api"],
+  // A distinct port name keeps practice sessions out of real clients' preferred range.
+  ports: ["fixtureWeb", "api"],
   proxyPorts: {api: "http"},
   defaultFixture: "base",
 
@@ -44,10 +45,10 @@ export default {
         {
           name: "web",
           command: process.execPath,
-          args: [server, "web", String(ports.web), dataDir],
+          args: [server, "web", String(ports.fixtureWeb), dataDir],
           cwd: dataDir,
           env: {API_URL: `http://127.0.0.1:${ports.api}`},
-          readyPort: "web",
+          readyPort: "fixtureWeb",
           readyTimeoutMs: 15_000,
         },
       ],
@@ -56,7 +57,7 @@ export default {
         args: [path.join(projectRoot, "seed.mjs"), dataDir, ...(fixture === "seed-fails" ? ["--fail"] : [])],
         cwd: dataDir,
       },
-      urls: {app: `http://127.0.0.1:${ports.web}/`, api: `http://127.0.0.1:${ports.api}/items`},
+      urls: {app: `http://127.0.0.1:${ports.fixtureWeb}/`, api: `http://127.0.0.1:${ports.api}/items`},
       credentialsFile,
     };
   },

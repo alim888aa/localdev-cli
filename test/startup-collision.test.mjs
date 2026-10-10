@@ -28,7 +28,7 @@ async function world(portName = "web", proxiedApp = false) {
   const project = await fs.mkdtemp(path.join(os.tmpdir(), "localdev-collision-"));
   const state = path.join(project, "state");
   const env = { ...process.env, LOCAL_CLI_STATE_DIR: state };
-  const run = async (...args) => JSON.parse((await exec(process.execPath, [cli, ...args], { cwd: project, env, timeout: 30000 })).stdout);
+  const run = async (...args) => JSON.parse((await exec(process.execPath, ["--import", new URL("./ports/occupied-client-range.mjs", import.meta.url).href, cli, ...args], { cwd: project, env, timeout: 30000 })).stdout);
   const readStored = async id => JSON.parse((await exec(process.execPath, ["--input-type=module", "-e",
     `import { readReceipt } from ${JSON.stringify(path.join(repo, "dist", "state.js"))};
      console.log(JSON.stringify(await readReceipt(process.argv[1])));`, id], { cwd: project, env })).stdout);

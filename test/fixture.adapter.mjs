@@ -2,7 +2,7 @@ import path from "node:path";
 import { mkdirSync, writeFileSync } from "node:fs";
 
 export default {
-  ports: ["app", "secondary"],
+  ports: ["testApp", "secondary"],
   defaultFixture: "base",
   cleanupPaths({ id, fixture, projectRoot }) {
     return fixture === "cleanup" || fixture === "slowsetup"
@@ -25,9 +25,9 @@ export default {
       command: process.execPath,
       args: fixture === "neverready"
         ? [path.join(projectRoot, "test", "slow-seed.mjs"), dataDir]
-        : [path.join(projectRoot, "test", fixture === "launcher" ? "launcher.mjs" : fixture === "detached" ? "detached-launcher.mjs" : fixture === "escaped-anchor" || fixture === "escaped-anchor-noseed" ? "escaped-anchor.mjs" : fixture === "late-escape" ? "late-escape.mjs" : "server.mjs"), String(ports.app), dataDir],
+        : [path.join(projectRoot, "test", fixture === "launcher" ? "launcher.mjs" : fixture === "detached" ? "detached-launcher.mjs" : fixture === "escaped-anchor" || fixture === "escaped-anchor-noseed" ? "escaped-anchor.mjs" : fixture === "late-escape" ? "late-escape.mjs" : "server.mjs"), String(ports.testApp), dataDir],
       env: { LOCALDEV_TEST_SECRET: "private-test-value" },
-      readyPort: "app",
+      readyPort: "testApp",
       readyTimeoutMs: 5000,
     }];
     if (fixture === "broken") services.push({
@@ -45,7 +45,7 @@ export default {
         args: [path.join(projectRoot, "test", fixture === "slowseed" || fixture === "timedseed" ? "slow-seed.mjs" : "seed.mjs"), dataDir],
         ...(fixture === "timedseed" ? { timeoutMs: 500 } : {}),
       },
-      urls: { app: `http://127.0.0.1:${ports.app}` },
+      urls: { app: `http://127.0.0.1:${ports.testApp}` },
     };
   },
 };

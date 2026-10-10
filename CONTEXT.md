@@ -50,6 +50,9 @@ The CLI owns the session; each project's adapter says what to run.
   loads and checks it; docs/adapter.md is its contract.
 - **Fixture**: named test data a session starts with. `defaultFixture` is used
   when none is named.
+  localdev's own test apps use `testApp`, and its `base` scratch client's web
+  service uses `fixtureWeb`. These port names select random ports, keeping
+  practice sessions outside the 3000–3010 range preferred by real `app`/`web` clients.
 - **Plan**: what `createSession` returns: services, an optional seed, URLs and
   a credentials file.
 - **Service**: a long-running command from the plan. The fault proxy is not a
