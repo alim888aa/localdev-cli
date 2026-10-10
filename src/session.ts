@@ -10,7 +10,7 @@ import { isSameProcess, ownIdentity } from "./process-table.js";
 import { countUnit, proxyLaunch } from "./proxy.js";
 import {
   bindPortsOf, findReceipt, isSessionId, removeOrphanTempDirs, removeSessionDirs, reserveSession, SessionGoneError,
-  updateLockedReceipt, updateReceipt,
+  updateLockedReceipt, updateReceipt, withStateLock,
 } from "./state.js";
 import { processAlive, processHealth, spawnSupervised, stopService, waitForSeed } from "./supervised.js";
 import type { OwnedProcess, ServiceSpec, SessionReceipt } from "./types.js";
@@ -329,5 +329,5 @@ async function stopReceipt(receipt: SessionReceipt, { lockHeld = false } = {}): 
     }
   }
   await cleanupPaths(receipt);
-  await removeSessionDirs(receipt);
+  await (lockHeld ? removeSessionDirs(receipt) : withStateLock(() => removeSessionDirs(receipt)));
 }

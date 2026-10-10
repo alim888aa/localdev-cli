@@ -26,7 +26,7 @@ function sessionPath(id: string): string {
   return path.join(sessionsRoot, id);
 }
 
-/** Delete a stopped session's temp dir (only once proven its own, see temp-dir), then its session dir. */
+/** Under the state lock, delete a stopped session's proven temp dir, then its session dir, excluding receipt writers. */
 export async function removeSessionDirs({ id, tempDir }: SessionReceipt): Promise<void> {
   if (tempDir) await removeTempDir(stateRoot, id, tempDir);
   await fs.rm(sessionPath(id), { recursive: true, force: true });

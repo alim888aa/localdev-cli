@@ -144,3 +144,41 @@ test("stop retains unverifiable live groups and leaves another session usable", 
     await w.cleanup();
   }
 });
+
+test("stop serializes directory deletion with a cancelling kill's receipt write", async () => {
+  const w = await world();
+  let kill;
+  let stop;
+  try {
+    const a = await w.run("startup", "--adapter", adapter);
+    const old = a.processes.find((p) => p.name === "api");
+    await writeFile(path.join(a.dataDir, "api", "listen-delay-ms"), "8000");
+    const dir = path.join(w.state, "delete-race");
+    await mkdir(dir);
+    const race = { NODE_OPTIONS: `--import=${JSON.stringify(path.join(root, "test/fault-stop/race-delete.mjs"))}`,
+      DELETE_RACE_DIR: dir, DELETE_RACE_SESSION: path.dirname(w.receiptFile(a.id)) };
+    kill = w.raw(["fault", a.id, "proxied", "--mode", "kill"], { ...race, DELETE_RACE_ROLE: "fault" });
+    kill.catch(() => undefined);
+    let replacement;
+    await waitUntil(async () => {
+      const receipt = await w.stored(a.id);
+      replacement = receipt.processes.find((p) => p.name === "api" && p.pid !== old.pid);
+      return replacement && receipt.faults.some((f) => f.mode === "kill");
+    });
+    stop = w.raw(["stop", a.id], { ...race, DELETE_RACE_ROLE: "stop" });
+    stop.catch(() => undefined);
+    await waitUntil(async () => {
+      const reached = (name) => stat(path.join(dir, name)).then(() => true, () => false);
+      return await reached("writer") && (await reached("empty") || await reached("deletion-lock"));
+    });
+    await writeFile(path.join(dir, "release"), "continue");
+    assert.deepEqual(JSON.parse((await stop).stdout), { id: a.id, stopped: true });
+    await assert.rejects(kill, (error) => error.code === 1 && /stopped/.test(error.stderr));
+    await assertStopped(w, a, replacement);
+    assert.deepEqual(await w.run("status"), []);
+  } finally {
+    await writeFile(path.join(w.state, "delete-race", "release"), "continue").catch(() => undefined);
+    await Promise.allSettled([kill, stop]);
+    await w.cleanup();
+  }
+});

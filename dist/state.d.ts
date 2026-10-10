@@ -2,7 +2,7 @@ import type { SessionReceipt } from "./types.js";
 export declare const stateRoot: string;
 /** The one session-ID check: IDs are UUIDs, and only an ID that passes may name a path under the state dir. */
 export declare function isSessionId(id: string): boolean;
-/** Delete a stopped session's temp dir (only once proven its own, see temp-dir), then its session dir. */
+/** Under the state lock, delete a stopped session's proven temp dir, then its session dir, excluding receipt writers. */
 export declare function removeSessionDirs({ id, tempDir }: SessionReceipt): Promise<void>;
 /** Remove this state dir's temp dirs whose session dir is gone. Never throws; see sweepOrphanTempDirs. */
 export declare function removeOrphanTempDirs(): Promise<void>;
