@@ -29,9 +29,13 @@ async function world(portName = "web", proxiedApp = false) {
   const state = path.join(project, "state");
   const env = { ...process.env, LOCAL_CLI_STATE_DIR: state };
   const run = async (...args) => JSON.parse((await exec(process.execPath, [cli, ...args], { cwd: project, env, timeout: 30000 })).stdout);
+  const readStored = async id => JSON.parse((await exec(process.execPath, ["--input-type=module", "-e",
+    `import { readReceipt } from ${JSON.stringify(path.join(repo, "dist", "state.js"))};
+     console.log(JSON.stringify(await readReceipt(process.argv[1])));`, id], { cwd: project, env })).stdout);
   await fs.writeFile(path.join(project, "local.adapter.mjs"), `
 import fs from "node:fs/promises";
 import path from "node:path";
+import { readReceipt } from ${JSON.stringify(path.join(repo, "dist", "state.js"))};
 export default {
   ports: [${JSON.stringify(portName)}, "api"], proxyPorts: { api: "http"${proxiedApp ? ", app: \"http\"" : ""} }, defaultFixture: "base",
   cleanupPaths({ id, projectRoot }) { return [path.join(projectRoot, ".local-cli-" + id + ".config")]; },
@@ -41,7 +45,7 @@ export default {
     const config = path.join(c.projectRoot, ".local-cli-" + c.id + ".config");
     await fs.writeFile(config, JSON.stringify(c.ports));
     if (await fs.access(path.join(c.projectRoot, "collide")).then(() => true, () => false)) {
-      await fs.writeFile(path.join(c.projectRoot, "selected"), JSON.stringify({ ...c, ownedProcesses: JSON.parse(await fs.readFile(path.join(c.sessionDir, "receipt.json"), "utf8")).processes }));
+      await fs.writeFile(path.join(c.projectRoot, "selected"), JSON.stringify({ ...c, ownedProcesses: (await readReceipt(c.id)).processes }));
       while (!await fs.access(path.join(c.projectRoot, "release-" + c.id)).then(() => true, () => false))
         await new Promise(resolve => setTimeout(resolve, 20));
     }
@@ -79,7 +83,7 @@ export default {
       for (const server of squatters) { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }
     }
   };
-  return { project, state, run, collide, attempts, cleanup };
+  return { project, state, run, readStored, collide, attempts, cleanup };
 }
 
 for (const [portName, replace, proxiedApp] of [["web", false, false], ["web", true, false], ["app", false, true]])
@@ -103,7 +107,7 @@ test(`startup recovers from a stolen ${portName} port (replace=${replace}, proxi
     assert.equal(await (await fetch(ready.urls.app)).text(), ready.dataDir);
     assert.equal(await (await fetch(`http://127.0.0.1:${abandoned.bindPorts[portName]}`)).text(), "unrelated");
     assert.ok(ready.processes.every(p => p.groupOwned && p.listenerOwned));
-    const receipt = JSON.parse(await fs.readFile(path.join(w.state, "sessions", ready.id, "receipt.json")));
+    const receipt = await w.readStored(ready.id);
     assert.deepEqual(JSON.parse(await fs.readFile(path.join(w.project, ".local-cli-" + ready.id + ".config"))), ready.ports);
     assert.ok(receipt.services.find(s => s.name === "web").args.includes(String(receipt.bindPorts[portName])));
     assert.notEqual(receipt.bindPorts[portName], abandoned.bindPorts[portName]);
