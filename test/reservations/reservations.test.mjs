@@ -8,9 +8,9 @@ import { promisify } from "node:util";
 import test from "node:test";
 
 const exec = promisify(execFile);
-const root = fileURLToPath(new URL("../", import.meta.url));
+const root = fileURLToPath(new URL("../../", import.meta.url));
 const cli = path.join(root, "dist/cli.js");
-const barrier = fileURLToPath(new URL("./reservations/barrier.mjs", import.meta.url));
+const barrier = fileURLToPath(new URL("./barrier.mjs", import.meta.url));
 
 async function world(t) {
   const scratch = await mkdtemp(path.join(os.tmpdir(), "localdev-reservation-"));
@@ -138,8 +138,25 @@ test("recovery preserves receipts, unrelated paths and symlinks", { timeout: 300
   const next = await w.run("startup");
   assert.equal(next.state, "ready");
   await assert.rejects(lstat(lost.session), { code: "ENOENT" });
+  await assert.rejects(w.run("stop", protectedIds[0]));
+  await assert.rejects(w.run("stop", protectedIds[1]));
+  await assert.rejects(w.run("stop", protectedIds[2]));
+  for (const id of [...protectedIds.slice(3), unrelatedId]) {
+    assert.deepEqual(await w.run("stop", id), { id, stopped: true, alreadyGone: true });
+  }
   for (const id of protectedIds) assert.ok(await lstat(path.join(sessions, id)));
   assert.equal(await readFile(path.join(sessions, unrelatedId, "keep"), "utf8"), "unrelated");
   assert.equal(await readFile(path.join(outside, "data/keep"), "utf8"), "safe");
   assert.equal(await readFile(path.join(sessions, failedId, "receipt.json"), "utf8"), receipt);
+});
+
+test("exact stop does not follow a symlinked sessions root", { timeout: 30000 }, async (t) => {
+  const w = await world(t);
+  const outside = path.join(w.scratch, "outside");
+  const id = "00000000-0000-0000-0000-000000000007";
+  await mkdir(path.join(outside, id, "data"), { recursive: true });
+  await mkdir(w.state);
+  await symlink(outside, path.join(w.state, "sessions"), "dir");
+  assert.deepEqual(await w.run("stop", id), { id, stopped: true, alreadyGone: true });
+  assert.equal((await lstat(path.join(outside, id, "data"))).isDirectory(), true);
 });
