@@ -8,7 +8,7 @@ import { launchService, StartupPortCollisionError } from "./launch.js";
 import { outboundRefusals, refusalExplanation } from "./outbound.js";
 import { isSameProcess, ownIdentity } from "./process-table.js";
 import { countUnit, proxyLaunch } from "./proxy.js";
-import { bindPortsOf, findReceipt, isSessionId, recoverReservation, removeOrphanTempDirs, removeSessionDirs, reserveSession, SessionGoneError, updateLockedReceipt, updateReceipt, } from "./state.js";
+import { bindPortsOf, findReceipt, isSessionId, recoverReservation, removeOrphanTempDirs, removeSessionDirs, reserveSession, SessionGoneError, updateLockedReceipt, updateReceipt, withStateLock, } from "./state.js";
 import { processAlive, processHealth, spawnSupervised, stopService, waitForSeed } from "./supervised.js";
 class DuplicateSessionError extends Error {
     matches;
@@ -315,5 +315,5 @@ async function stopReceipt(receipt, { lockHeld = false } = {}) {
         }
     }
     await cleanupPaths(receipt);
-    await removeSessionDirs(receipt);
+    await (lockHeld ? removeSessionDirs(receipt) : withStateLock(() => removeSessionDirs(receipt)));
 }

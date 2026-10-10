@@ -172,17 +172,22 @@ test("exact stop does not follow a symlinked sessions root", { timeout: 30000 },
   assert.equal((await lstat(path.join(outside, id, "data"))).isDirectory(), true);
 });
 
-test("startup tolerates a normal stop removing a session during the recovery sweep", { timeout: 30000 }, async (t) => {
+test("startup waits for normal stop's directory removal before the recovery sweep", { timeout: 30000 }, async (t) => {
   const w = await world(t);
   const first = await w.run("startup");
   const stopping = w.start("pause-remove", "stop", first.id);
   await stopping.event("removing");
-  const starting = w.start("pause-scan", "startup");
-  await starting.event("scanning");
+  const starting = w.start("observe", "startup");
+  await starting.event("waiting");
+  const [retained] = await w.run("status", first.id);
+  assert.equal(retained.id, first.id);
+  assert.equal(retained.state, "stopping");
   stopping.process.send("release");
-  assert.equal((await stopping.done).code, 0);
-  starting.process.send("release");
+  const stopped = await stopping.done;
+  assert.equal(stopped.code, 0, stopped.stderr);
+  assert.deepEqual(JSON.parse(stopped.stdout), { id: first.id, stopped: true });
   const result = await starting.done;
   assert.equal(result.code, 0, result.stderr);
   assert.equal(JSON.parse(result.stdout).state, "ready");
+  assert.deepEqual(await w.run("status", first.id), [{ id: first.id, state: "gone" }]);
 });

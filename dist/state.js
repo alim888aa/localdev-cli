@@ -19,7 +19,7 @@ function sessionPath(id) {
         throw new Error("Invalid session ID");
     return path.join(sessionsRoot, id);
 }
-/** Delete a stopped session's temp dir (only once proven its own, see temp-dir), then its session dir. */
+/** Under the state lock, delete a stopped session's proven temp dir, then its session dir, excluding receipt writers. */
 export async function removeSessionDirs({ id, tempDir }) {
     if (tempDir)
         await removeTempDir(stateRoot, id, tempDir);
@@ -66,7 +66,7 @@ async function recoverLockedReservations(id) {
             await fs.rmdir(dir);
         }
         catch (error) {
-            // A normal stop removes its session directory outside the state lock.
+            // Older CLI versions can remove a session directory without holding the state lock.
             if (error.code !== "ENOENT")
                 throw error;
         }

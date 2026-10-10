@@ -13,17 +13,15 @@ fs.mkdir = async (...args) => {
   return result;
 };
 
-for (const [method, mode, event] of [["rm", "pause-remove", "removing"], ["readdir", "pause-scan", "scanning"]]) {
-  const original = fs[method];
-  fs[method] = async (...args) => {
-    if (process.env.RESERVATION_BARRIER === mode && /[/\\]sessions[/\\][0-9a-f-]{36}$/.test(String(args[0]))) {
-      const released = new Promise((resolve) => process.once("message", resolve));
-      process.send({ event, dir: String(args[0]) });
-      await released;
-    }
-    return original(...args);
-  };
-}
+const remove = fs.rm;
+fs.rm = async (...args) => {
+  if (process.env.RESERVATION_BARRIER === "pause-remove" && /[/\\]sessions[/\\][0-9a-f-]{36}$/.test(String(args[0]))) {
+    const released = new Promise((resolve) => process.once("message", resolve));
+    process.send({ event: "removing", dir: String(args[0]) });
+    await released;
+  }
+  return remove(...args);
+};
 
 const rename = fs.rename;
 fs.rename = async (...args) => {
