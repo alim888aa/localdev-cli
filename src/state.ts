@@ -40,6 +40,38 @@ export function removeOrphanTempDirs(): Promise<void> {
   }));
 }
 
+/** Recover one receiptless reservation after waiting out any live writer under the state lock. */
+export function recoverReservation(id: string): Promise<void> {
+  return withStateLock(() => recoverLockedReservations(id));
+}
+
+async function recoverLockedReservations(id?: string): Promise<void> {
+  const root = await fs.lstat(sessionsRoot).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  });
+  if (!root?.isDirectory()) return;
+  // Every compatible writer holds the state lock until publication; only its empty pre-receipt layout is debris.
+  for (const entry of await fs.readdir(sessionsRoot, { withFileTypes: true })) {
+    if (!entry.isDirectory() || !isSessionId(entry.name) || (id && entry.name !== id)) continue;
+    try {
+      const dir = sessionPath(entry.name);
+      const entries = await fs.readdir(dir, { withFileTypes: true });
+      if (!entries.some((item) => item.name === "data" && item.isDirectory())) continue;
+      const temporary = entries.filter((item) => item.name !== "data");
+      if (temporary.some((item) => !item.isFile() || !/^receipt\.json\.\d+\.tmp$/.test(item.name))) continue;
+      const data = path.join(dir, "data");
+      if ((await fs.readdir(data)).length) continue;
+      for (const item of temporary) await fs.unlink(path.join(dir, item.name));
+      await fs.rmdir(data);
+      await fs.rmdir(dir);
+    } catch (error) {
+      // Older CLI versions can remove a session directory without holding the state lock.
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+  }
+}
+
 export async function readReceipt(id: string): Promise<SessionReceipt> {
   const raw = await fs.readFile(path.join(sessionPath(id), "receipt.json"), "utf8");
   return JSON.parse(raw) as SessionReceipt;
@@ -195,11 +227,7 @@ async function acquireLock(): Promise<() => Promise<void>> {
   };
 }
 
-/**
- * Run fn under the allocation lock. Receipt read-modify-writes go through updateReceipt, which uses it, so two
- * commands cannot each write back a receipt missing the other's change. Not reentrant: code already inside
- * reserveSession's beforeAllocate holds the lock and must not call this or updateReceipt (it would wait forever).
- */
+/** Run fn under the shared state lock. Not reentrant: reserveSession's beforeAllocate already holds it. */
 export async function withStateLock<T>(fn: () => Promise<T>): Promise<T> {
   const release = await acquireLock();
   try { return await fn(); } finally { await release(); }
@@ -221,6 +249,7 @@ export async function reserveSession(
   }
   const release = await acquireLock();
   try {
+    await recoverLockedReservations();
     await removeOrphanTempDirs();
     if (beforeAllocate) await beforeAllocate(await listReceipts());
     const used = new Set((await listReceipts())

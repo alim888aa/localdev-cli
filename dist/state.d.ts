@@ -6,6 +6,8 @@ export declare function isSessionId(id: string): boolean;
 export declare function removeSessionDirs({ id, tempDir }: SessionReceipt): Promise<void>;
 /** Remove this state dir's temp dirs whose session dir is gone. Never throws; see sweepOrphanTempDirs. */
 export declare function removeOrphanTempDirs(): Promise<void>;
+/** Recover one receiptless reservation after waiting out any live writer under the state lock. */
+export declare function recoverReservation(id: string): Promise<void>;
 export declare function readReceipt(id: string): Promise<SessionReceipt>;
 /** A receipt, or null when there is none (stop removes it, so stopped and unknown IDs look alike). Other errors throw. */
 export declare function findReceipt(id: string): Promise<SessionReceipt | null>;
@@ -33,11 +35,7 @@ export declare function listReceipts(): Promise<SessionReceipt[]>;
 /** Write a receipt as is: only for a new receipt, or inside updateReceipt or withReceipt (lock held, read fresh). */
 export declare function writeReceipt(receipt: SessionReceipt): Promise<void>;
 export declare const lockPort: number;
-/**
- * Run fn under the allocation lock. Receipt read-modify-writes go through updateReceipt, which uses it, so two
- * commands cannot each write back a receipt missing the other's change. Not reentrant: code already inside
- * reserveSession's beforeAllocate holds the lock and must not call this or updateReceipt (it would wait forever).
- */
+/** Run fn under the shared state lock. Not reentrant: reserveSession's beforeAllocate already holds it. */
 export declare function withStateLock<T>(fn: () => Promise<T>): Promise<T>;
 /**
  * Reserve a complete port set before another CLI invocation can allocate one. Each name in bindNames also gets a
