@@ -51,9 +51,15 @@ function procEntry(pid: number, procRoot: string): ProcessEntry | null {
   return { pid, parent, group, zombie: fields[0] === "Z" || fields[0] === "X" };
 }
 
-function procBirth(pid: number, procRoot = "/proc"): string | null {
+function procBirth(pid: number, procRoot = "/proc", boot = bootId): string | null {
   const start = procStat(pid, procRoot)?.[19];
-  return bootId && start && /^\d+$/.test(start) ? `${PROC_BIRTH}${bootId}:${start}` : null;
+  return boot && start && /^\d+$/.test(start) ? `${PROC_BIRTH}${boot}:${start}` : null;
+}
+
+/** The PID /proc/self/stat names, which is the caller's own PID only when procRoot is its PID namespace's procfs. */
+function procSelfPid(procRoot: string): number | null {
+  try { return Number(/^(\d+) \(/.exec(readFileSync(path.join(procRoot, "self", "stat"), "utf8"))?.[1]) || null; }
+  catch { return null; }
 }
 
 /** Every process in a procfs root; null when it cannot be read. Exported for the listener module and tests. */
@@ -88,6 +94,30 @@ function psTable(): ProcessEntry[] | null {
  */
 export function birthOf(pid: number): string | null {
   return useProc ? procBirth(pid) : psBirth(pid);
+}
+
+/**
+ * This process's birth, or why this runtime cannot verify process identity. Ask before starting anything: owned
+ * processes are recorded and later signalled by the births this module reads, so a runtime where that read names
+ * the wrong process, or nothing, must be refused. procRoot and pid read a procfs root instead (tests).
+ */
+export function ownIdentity(procRoot?: string, pid = process.pid): { birth: string } | { problem: string } {
+  if (!procRoot && !useProc) {
+    const birth = psBirth(pid);
+    return birth ? { birth } : { problem: "ps cannot report this process's start time" };
+  }
+  const root = procRoot ?? "/proc";
+  // Some sandboxes run Node in a PID namespace but show the outer namespace's /proc, where Node's PIDs name other
+  // processes (#23). Reading through it would record and later signal an unrelated process.
+  const selfPid = procSelfPid(root);
+  if (selfPid !== pid) {
+    const names = `it calls this process ${selfPid ?? "nothing"}, Node calls it ${pid}`;
+    return { problem: `/proc belongs to another PID namespace (${names}); run localdev where /proc is mounted for its own PID namespace` };
+  }
+  const boot = procRoot ? readBootId(procRoot) : bootId;
+  if (!boot) return { problem: "/proc has no boot identity (sys/kernel/random/boot_id or btime in /proc/stat)" };
+  const birth = procBirth(pid, root, boot);
+  return birth ? { birth } : { problem: "/proc cannot report this process's start time" };
 }
 
 /**

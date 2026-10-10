@@ -6,7 +6,7 @@ import { gitCommit, projectRoot } from "./checkout.js";
 import { activeFaults, resumeAllFaults } from "./fault.js";
 import { launchService } from "./launch.js";
 import { outboundRefusals, refusalExplanation, type OutboundPolicy } from "./outbound.js";
-import { birthOf, isSameProcess } from "./process-table.js";
+import { isSameProcess, ownIdentity } from "./process-table.js";
 import { countUnit, proxyLaunch } from "./proxy.js";
 import {
   bindPortsOf, findReceipt, isSessionId, reserveSession, SessionGoneError, sessionPath, updateLockedReceipt, updateReceipt,
@@ -150,8 +150,8 @@ export async function startSession(options: StartOptions): Promise<object> {
   if (!fixture || typeof fixture !== "string" || !fixture.trim()) {
     throw new Error(`No fixture named. Set defaultFixture in ${adapterPath} or run localdev startup <fixture>`);
   }
-  const ownerBirth = birthOf(process.pid);
-  if (!ownerBirth) throw new Error("Could not verify startup process identity");
+  const owner = ownIdentity();
+  if ("problem" in owner) throw new Error(`Cannot verify process identity here, so localdev won't start processes it can't stop safely: ${owner.problem}`);
   const parallel = Boolean(options.parallel);
   if (parallel && options.replace) throw new Error("Choose either --replace or --parallel");
   const replaceId = typeof options.replace === "string" ? options.replace : undefined;
@@ -165,7 +165,7 @@ export async function startSession(options: StartOptions): Promise<object> {
         sessionDir: dir, dataDir: path.join(dir, "data"), ports,
         ...(Object.keys(proxyPorts).length ? { bindPorts, proxyPorts } : {}),
         ...(options.outbound ? { outbound: options.outbound } : {}),
-        urls: {}, processes: [], state: "starting", ownerPid: process.pid, ownerBirth,
+        urls: {}, processes: [], state: "starting", ownerPid: process.pid, ownerBirth: owner.birth,
         createdAt: new Date().toISOString(),
       }), async (receipts) => {
         const matches = await matchingSessions(receipts, root, fixture);
