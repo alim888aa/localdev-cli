@@ -129,7 +129,9 @@ test("stop retains unverifiable live groups and leaves another session usable", 
       api.guardBirth = "unverifiable-birth";
       await writeFile(w.receiptFile(a.id), JSON.stringify(forged));
       await assert.rejects(w.run("stop", a.id), /Could not verify ownership of api process group.*kept for inspection/);
-      assert.equal((await w.stored(a.id)).state, "failed");
+      const [failed] = await w.run("status", a.id);
+      assert.equal(failed.state, "failed");
+      assert.match(failed.error, /Could not verify ownership of api process group/);
       assert.equal(groupAlive(api.pid), true, "the unverifiable live group was not signalled");
       assert.equal(groupAlive(other.pid), true);
       assert.equal((await w.run("status", b.id))[0].state, "ready");
