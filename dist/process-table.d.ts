@@ -14,6 +14,16 @@ export declare function readProcTable(procRoot?: string): ProcessEntry[] | null;
  */
 export declare function birthOf(pid: number): string | null;
 /**
+ * This process's birth, or why this runtime cannot verify process identity. Ask before starting anything: owned
+ * processes are recorded and later signalled by the births this module reads, so a runtime where that read names
+ * the wrong process, or nothing, must be refused. procRoot and pid read a procfs root instead (tests).
+ */
+export declare function ownIdentity(procRoot?: string, pid?: number): {
+    birth: string;
+} | {
+    problem: string;
+};
+/**
  * Whether pid is still the process whose birth was recorded, never a later one reusing the PID. The recorded
  * format picks the backend, so a receipt written by an older localdev (ps start times) still matches wherever ps
  * works.

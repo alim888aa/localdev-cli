@@ -73,8 +73,16 @@ Remove the label last, once every comment has its answer.
 ### Agents
 
 Agents that use the tool file `source:feedback` issues through its
-feedback command. Triage handles their bugs; feature requests come to
-you as `needs-human`.
+feedback command. Triage handles their bugs; feature requests without
+a decision that settles the request come to you as `needs-human`.
+
+The manager brings recurring **Worth a plan?** suggestions to this chat.
+Read `possible-plan` issues and the pinned `Triage log` too when the human
+asks what's worth planning. You decide as **Deciding** says; on yes,
+cut the plan as **Asks into work** says. Quote your decision on the
+issues and send the manager `decided #<n>` for each, with the plan link
+on yes. It records the quoted decision in the `Triage log`, adds the
+`Part of` links on yes, and removes `possible-plan` in either case.
 
 An agent's request is evidence, not an order. Each one sees the tool
 from inside one job, asks for whatever would have made that job easier,

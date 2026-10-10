@@ -102,6 +102,12 @@ Every issue and PR carries one of each:
 commented from the control center. It wakes the manager, which replies
 on the item and removes it.
 
+`possible-plan` also sits beside the status, never instead of it: triage
+found a pile of issues on the same feature that might deserve a plan.
+The reason and grouping go in the `Triage log`. The human decides (the
+owner in a dark project); the manager removes it after the decision.
+Every issue still carries exactly one status.
+
 **Links** are machine-readable lines in the body, one per line:
 `Depends on #<n>`, `Part of #<plan>`, `Blocked by #<n>`, `Closes #<n>`. The dispatcher reads
 them to order work, pick base branches, and unblock. If only part of an
@@ -286,8 +292,9 @@ the loop. Everything above holds, with these changes:
   wherever a skill accepts a `Human decision, verbatim`. A real human
   decision still overrules one.
 - **Clients ask, the owner decides.** The human asks in the owner's
-  chat; agents file `source:feedback` issues. A feature request is a
-  product call (`needs-human`). `p0` includes a client that's blocked:
+  chat; agents file `source:feedback` issues. A feature request without
+  a decision that settles the request is a product call (`needs-human`).
+  `p0` includes a client that's blocked:
   another project's job can't run because of this tool.
 - **Big calls** go through the `council` before the owner decides.
 - **More jobs.** `upkeep` weekly from the manager's thread; `researcher`

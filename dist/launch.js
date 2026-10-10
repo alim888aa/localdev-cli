@@ -1,4 +1,9 @@
+import { listenerPids, ownedListener } from "./listener.js";
 import { spawnSupervised, stopService, waitForService } from "./supervised.js";
+/** A failed app/web readiness wait with an unrelated listener: startup may retry the allocation. */
+export class StartupPortCollisionError extends Error {
+    constructor(name, port) { super(`Port ${name} (${port}) was taken by an unrelated listener during startup`); }
+}
 /**
  * The one way localdev starts a long-running process: startup's services, the fault proxy, and a service restarted
  * by `fault --mode kill`. Two phases, so a caller can spawn and record under the state lock and wait for
@@ -25,8 +30,20 @@ export async function launchService(spec, { root, sessionDir, ports, outbound, r
     return {
         owned,
         async ready(ensureActive) {
-            for (const check of checks)
-                await waitForService(child, spec, check.port, owned, ensureActive);
+            for (const check of checks) {
+                try {
+                    await waitForService(child, spec, check.port, owned, ensureActive);
+                }
+                catch (error) {
+                    // Cancellation wins over a port collision, and never restarts a stopped session.
+                    await ensureActive();
+                    if ((check.name === "app" || check.name === "web") &&
+                        listenerPids(check.port).length && !ownedListener(owned, check.port)) {
+                        throw new StartupPortCollisionError(check.name, check.port);
+                    }
+                    throw error;
+                }
+            }
         },
         async abandon() {
             const stopped = await stopService(owned);

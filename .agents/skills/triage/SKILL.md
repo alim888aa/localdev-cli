@@ -16,6 +16,18 @@ Two runs, told to you at start:
 - **New issues.** The dispatcher saw issues with no status. Triage them.
 - **Daily pass.** Everything open, for what's gone stale or drifted.
 
+Before changing an item's status, read its body, full comment history,
+and any linked PRs: bodies, comments, reviews and current state. Read
+decisions on its plan too. Fetch every page; a partial thread isn't enough.
+A later answer, manager ruling, or quoted Human or Owner decision may
+already settle an old question. Follow it and link the answer in the log;
+don't escalate it again. Use the linked PR's current state to tell whether
+the work is already underway.
+
+Whenever you set `needs-manager` or `needs-human`, first post a comment on
+that item naming the exact call still needed and why. Set the status only
+after the comment succeeds, and link that comment in the triage log.
+
 ## New issues
 
 For every issue with no status, in priority order:
@@ -36,7 +48,8 @@ For every issue with no status, in priority order:
    and priority: `p0` only for live breakage, data loss, or a client
    that's blocked, `p1` for what the human asked for next or what
    unblocks other work, `p2` otherwise. A `source:feedback` issue that
-   asks for new behaviour is a product call: `needs-human`.
+   asks for new behaviour without a decision that settles the request is
+   a product call: `needs-human`.
 6. **Set status**, unless an earlier step set `needs-human`; that one
    stands. `agent-ready` when a job could start now, `blocked` with
    the link when it can't, `backlog` when it's real but not soon.
@@ -62,8 +75,20 @@ dispatcher's and happens on the event, not here.
   turned into a `refactor` in the comments, a `Depends on` that merged, a
   `blocked` whose blocker closed but didn't flip.
 - Flag a pattern: three or more open issues from different sources on the
-  same feature in the window is one `needs-human` note on the newest,
-  saying which, so the manager can bring it to the human as a possible plan.
+  same feature in the window, skipping issues with a PR in flight or
+  `Part of` an existing plan before counting. Read all earlier
+  **Worth a plan?** sections and decisions in the pinned `Triage log`;
+  skip a feature already listed unless the pile includes new issues not
+  linked in any earlier suggestion for it, even after a no. Before adding
+  `possible-plan`, ensure the repo has it (including projects set up before
+  this label existed): run
+  `gh label create possible-plan --repo <owner>/<repo> --color D4C5F9 --description "These issues may need a plan." --force`.
+  Only after that succeeds, add it to each issue in the pile, keeping its
+  status. Still add a **Worth a plan?** section to the normal daily log comment: one
+  line per feature, its plain name, why it might deserve a plan, and the
+  issue links. The manager removes the label after the human or owner
+  decides; don't put it back unless new issues join the pile. This step
+  never opens an issue or changes any status, including `needs-human`.
 
 One line per action, in a single comment on the project's triage log
 issue. Nothing to the human.

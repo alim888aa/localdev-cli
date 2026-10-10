@@ -145,7 +145,7 @@ Remove Actions that run the same thing on PRs; the laptop does that.
 ## 5. Labels
 
 Create the label set from `factory-workflow`: statuses (including
-`needs-manager`), `human-comment`, `type:*`,
+`needs-manager`), `human-comment`, `possible-plan`, `type:*`,
 `source:*` with the project's monitors, `p0`–`p2`, and a `feature:*`
 per area the human names. Map the old ones (`cloud-ready` becomes
 `agent-ready`, `local-verification` becomes `verifier-ready`,
@@ -153,6 +153,9 @@ per area the human names. Map the old ones (`cloud-ready` becomes
 the old labels. Issues still `building` from before the factory lose
 that label, so triage looks at them fresh; otherwise the dispatch thread
 would treat each one as a crashed worker and relaunch it.
+
+Create `possible-plan` with color `D4C5F9` and description
+"These issues may need a plan."
 
 ## 6. factory.json
 

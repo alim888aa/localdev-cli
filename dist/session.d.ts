@@ -2,11 +2,7 @@ import { type OutboundPolicy } from "./outbound.js";
 import { processHealth } from "./supervised.js";
 import type { OwnedProcess, SessionReceipt } from "./types.js";
 type ProcessHealth = Awaited<ReturnType<typeof processHealth>>;
-/**
- * The one health verdict, so duplicate matching and status cannot drift. A process is alive when its group is owned
- * and running and none of its ports is unreachable or held by another process. A ready session with a port that is
- * unreachable or not owned is degraded; one is healthy when it has processes and every one is alive.
- */
+/** Shared health verdict for matching and status: every process must be owned, alive and reachable. */
 export declare function sessionHealth(receipt: SessionReceipt): Promise<{
     processes: Array<{
         record: OwnedProcess;

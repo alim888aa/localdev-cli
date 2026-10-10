@@ -52,9 +52,9 @@ and a pattern proposal opened as the `error-handling` skill says.
 - **Error style:** `new Error(message)` almost everywhere, thrown up to one
   entry wrapper: the `main().catch` in `cli`. It prints only `error.message`
   to stderr and sets exit code 1. There is no other exit code, no stack and no
-  JSON error. Four small classes exist, used to branch in code and not to name
-  a pattern: `SessionGoneError` (`state`), `DuplicateSessionError` and
-  `StartupStoppedError` (`session`), `NotPublishedError` (`issue`).
+  JSON error. Small error classes are used to branch in code: `SessionGoneError` (`state`), `DuplicateSessionError` and
+  `StartupStoppedError` (`session`), `NotPublishedError` (`issue`), and `StartupPortCollisionError` (`launch`,
+  `retry-then-alert` for startup).
   `run-sync` attaches `code`, `status` and `stderr` to the Error it throws.
 - **Errors module:** none. A typed error lives beside the owner that throws it
   (guess). Messages say what to do next where the CLI knows (for example
@@ -68,7 +68,13 @@ and a pattern proposal opened as the `error-handling` skill says.
   For a bug in the shared CLI, agents file `localdev issue bug --submit`
   (docs/issues.md); a bug in a project's adapter goes to that project.
 - **Extra patterns:** none.
-- **Retry limits:** no attempt counts and no backoff. Waits have time limits,
+- **Retry limits:** startup retries a failed app/web readiness wait only when
+  that port has an unrelated listener, with at most three complete startup
+  attempts and no backoff. Before reallocating it verifies all owned processes
+  stopped and removes the abandoned session and adapter cleanup paths. It
+  regenerates the adapter plan on the new allocation; replacement stops the
+  selected old session only once. Adapter, seed and other service failures do
+  not retry. Other waits have time limits,
   then the piece fails: state lock 60 s, service readiness 60 s
   (`readyTimeoutMs`), seed 5 min (`seed.timeoutMs`), stop 4 s of SIGTERM then
   2 s after SIGKILL, proxy control 2 s (1 s for `status`).
@@ -121,7 +127,7 @@ and a pattern proposal opened as the `error-handling` skill says.
 | --- | --- |
 | `fail-request` | bad or unknown flag, missing value, missing or invalid session ID, bad `--ms` / `--count`, duplicate session without `--replace` or `--parallel`, replacing a session that isn't healthy and ready, a fault on a session that isn't ready or a port that is unknown or busy, a wrong adapter shape, a missing issue field. Message on stderr, exit 1, nothing changed. |
 | `stop-and-alert` | startup failing after reservation (seed fails or times out, a service exits or never listens, the adapter throws, ownership can't be verified); a stop that can't verify a process (receipt kept as `failed`); a `fault --mode kill` service that doesn't come back. Everything started is stopped, finished state stays for inspection, exit 1. |
-| `retry-then-alert` | the time-limited waits above, which end in a failure naming the log (guess: a deadline wait counts as this pattern). |
+| `retry-then-alert` | an app/web startup port taken by an unrelated listener (`StartupPortCollisionError` in `launch`): retry the whole allocation up to three attempts, then fail startup with the reason and logs. Also the time-limited waits above, which end in a failure naming the log (guess: a deadline wait counts as this pattern). |
 | `skip-and-alert` | none today. The nearest cases are silent, see the open questions. |
 
 ### Known gaps

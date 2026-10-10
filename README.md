@@ -94,7 +94,8 @@ proxy with the session.
 
 From any project checkout, run `localdev issue bug` or
 `localdev issue request`. The command formats the report with checkout details
-and applies the `bug` or `enhancement` label when published. It previews the
+and applies the `source:feedback` label plus `type:bug` or `type:feature` when
+published. It previews the
 report before asking a person to publish. Unattended agents can supply a JSON
 file and explicitly publish:
 
@@ -180,7 +181,9 @@ group supervisor, so `stop` can still kill a server left behind by an exited
 launcher. A guard in the same group keeps ownership verifiable if the supervisor
 itself crashes. `status` probes each service port and reports `degraded` if one
 goes down or another process takes its port. Listener ownership checks the
-process group through Linux `/proc` or `lsof`; macOS requires `lsof`. An in-flight
+process group through Linux `/proc` or `lsof`; macOS requires `lsof`. On Linux,
+`/proc` must belong to localdev's own PID namespace: a sandbox that shows the
+outer namespace's `/proc` is refused at startup, before any session is created. An in-flight
 seed is recorded in the receipt before the CLI waits for it. Seeds time out
 after five minutes by default; set `seed.timeoutMs` in an
 adapter if a fixture needs a different limit. A failed startup stops launched

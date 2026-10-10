@@ -45,7 +45,8 @@ authenticate it.
 The first command prints a draft, plus a link that opens GitHub's new-issue
 form with the report filled in. Use the link when `gh` isn't available.
 `--submit` creates the issue in the public `alim888aa/localdev-cli` repo,
-applies the `bug` label, and checks the saved title and label. The checkout
+applies the `type:bug` and `source:feedback` labels, and checks the saved
+title and labels. The checkout
 path is shown relative to your home directory (`~/...`), so your local user
 name isn't published. The session option adds only the ID, fixture, state, and
 checkout commit; it never attaches credential files or full receipts. Omit
@@ -54,7 +55,8 @@ commit is unknown; use `--cli-ref <installed-commit>` in that case.
 
 For a request, use `localdev issue request` with an input file containing
 `title`, `task`, `desired`, `whyShared`, and `acceptance`. Optional `impact` and
-`evidence` fields add context. It applies the `enhancement` label. For both
+`evidence` fields add context. It applies the `type:feature` and
+`source:feedback` labels. For both
 kinds, the input file must already be free of secrets and personal data; the
 command does not inspect or redact arbitrary text. Issues are public. `--submit` needs `gh` installed and
 authenticated; without it, use the printed link.
