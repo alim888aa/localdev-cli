@@ -32,15 +32,17 @@ function cliRunner(state) {
 const startup = (run, ...flags) => run("startup", "--project", root, "--adapter", adapter, ...flags);
 const gone = (dir) => lstat(dir).then(() => false, (error) => error.code === "ENOENT");
 
+// Every session in the state dir, failed startups included: each keeps its temp dir in /tmp until stopped.
+async function stopAll(run) {
+  for (const { id } of await run("status").catch(() => [])) await run("stop", id).catch(() => undefined);
+}
+
 test("a session's temp dir keeps a Unix socket path short, is private to it, and goes on stop", async () => {
   const { base, state } = await longStateDir();
   const run = cliRunner(state);
-  const ids = [];
   try {
     const first = await startup(run);
-    ids.push(first.id);
     const second = await startup(run, "--parallel");
-    ids.push(second.id);
     const underDataDir = path.join(first.dataDir, "tmp", "fire_emu_0123456789abcdef.sock");
     assert.ok(Buffer.byteLength(underDataDir) > 108, `the state dir is long enough to break a socket: ${underDataDir}`);
 
@@ -65,7 +67,7 @@ test("a session's temp dir keeps a Unix socket path short, is private to it, and
     await run("stop", second.id);
     assert.ok(await gone(second.tempDir));
   } finally {
-    for (const id of ids) await run("stop", id).catch(() => undefined);
+    await stopAll(run);
     await rm(base, { recursive: true, force: true });
   }
 });
@@ -73,12 +75,10 @@ test("a session's temp dir keeps a Unix socket path short, is private to it, and
 test("startup and stop remove this state dir's orphaned temp dirs and nothing else", async () => {
   const { base, state } = await longStateDir();
   const run = cliRunner(state);
-  const ids = [];
   const made = [];
   const makeDir = async (dir) => { made.push(dir); await mkdir(dir, { mode: 0o700 }); return dir; };
   try {
     const live = await startup(run);
-    ids.push(live.id);
     const prefix = path.basename(live.tempDir).slice(0, -live.id.length);
     const otherPrefix = `lc-${prefix.slice(3, 11) === "00000000" ? "11111111" : "00000000"}-`;
     // An older localdev stopping a session removes its session dir but not its temp dir.
@@ -87,7 +87,6 @@ test("startup and stop remove this state dir's orphaned temp dirs and nothing el
     const notASession = await makeDir(path.join("/tmp", `${prefix}not-a-session`));
 
     const next = await startup(run, "--parallel");
-    ids.push(next.id);
     assert.ok(await gone(orphan), "startup removes an orphaned temp dir");
     assert.equal(await gone(live.tempDir), false, "a live session's temp dir stays");
     assert.equal(await gone(otherStateDirs), false, "another state dir's temp dir stays");
@@ -99,7 +98,7 @@ test("startup and stop remove this state dir's orphaned temp dirs and nothing el
     assert.ok(await gone(secondOrphan), "stop removes an orphaned temp dir, even for an unknown ID");
     assert.equal(await gone(next.tempDir), false);
   } finally {
-    for (const id of ids) await run("stop", id).catch(() => undefined);
+    await stopAll(run);
     for (const dir of made) await rm(dir, { recursive: true, force: true });
     await rm(base, { recursive: true, force: true });
   }
@@ -108,13 +107,10 @@ test("startup and stop remove this state dir's orphaned temp dirs and nothing el
 test("stop refuses a receipt temp dir that isn't the session's own, and the cleanupPaths guard is unchanged", async () => {
   const { base, state } = await longStateDir();
   const run = cliRunner(state);
-  const ids = [];
   let restore;
   try {
     const session = await startup(run);
-    ids.push(session.id);
     const other = await startup(run, "--parallel");
-    ids.push(other.id);
     const receiptFile = path.join(state, "sessions", session.id, "receipt.json");
     const receipt = JSON.parse(await readFile(receiptFile, "utf8"));
     restore = () => writeFile(receiptFile, JSON.stringify(receipt));
@@ -129,7 +125,7 @@ test("stop refuses a receipt temp dir that isn't the session's own, and the clea
     assert.ok(await gone(session.tempDir));
   } finally {
     await restore?.().catch(() => undefined);
-    for (const id of ids) await run("stop", id).catch(() => undefined);
+    await stopAll(run);
     await rm(base, { recursive: true, force: true });
   }
   const id = randomUUID();
