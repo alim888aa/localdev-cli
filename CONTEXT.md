@@ -32,6 +32,8 @@ The CLI owns the session; each project's adapter says what to run.
   for that canonical state dir and ID, `lstat` shows a real directory (never a
   symlink) owned by this user, and its marker names the same state dir and ID.
   `stop` removes a proven one and leaves anything else with a stderr line.
+  A startup whose chmod or marker write fails rolls back only the dir it just
+  made (see **Must never break**).
   `startup` and `stop` also remove proven ones whose session directory is gone
   (an **orphaned** temp dir). The `temp-dir` owner holds these rules. It is
   never an adapter `cleanupPaths` entry.
@@ -186,8 +188,16 @@ from.
   proven (see **Session temp dir**): the canonical (realpath) state dir and
   ID give its exact path, `lstat` shows a directory owned by this user (a
   symlink is never followed or removed), and the marker written at creation
-  names the same canonical state dir and ID. The name's hash alone never
-  counts. The sweep also needs the session directory to be gone.
+  names the same canonical state dir and ID (compared as written: a malformed
+  or unreadable marker fails the proof, and `stop` still finishes). The name's
+  hash alone never counts. The sweep also needs the session directory to be
+  gone. The one removal without a marker is startup's **rollback**, approved
+  on PR #37 too: when the chmod or marker write fails right after startup's
+  own fresh, non-recursive `mkdir`, the CLI may remove that dir only if
+  `lstat` still shows the same dev, inode and owner (no symlink, no
+  replacement). It unlinks at most the regular marker file that call wrote,
+  then `rmdir`s, never recursively. Anything else, or a failed cleanup, is
+  left in place, and the startup error names its path and why.
 - `status` never prints env, specs or credentials.
 
 ## Direction

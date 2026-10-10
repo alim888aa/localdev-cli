@@ -1,6 +1,9 @@
 /** The temp dir path for a session of this state dir; record it before makeTempDir creates it. */
 export declare function tempDirFor(stateRoot: string, id: string): Promise<string>;
-/** Create a session's temp dir (0700) and its identity marker. An existing path fails instead of being reused. */
+/**
+ * Create a session's temp dir (0700) and its identity marker. An existing path fails instead of being reused. If the
+ * chmod or marker write fails, the dir this call just made is rolled back (rollBack) and TempDirSetupError thrown.
+ */
 export declare function makeTempDir(stateRoot: string, id: string): Promise<void>;
 /**
  * stop's removal of a session's temp dir: only once proven (see unproven). Anything else is left in place and named on

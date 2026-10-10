@@ -23,13 +23,64 @@ function tempDirOf(stateDir, id) {
 export async function tempDirFor(stateRoot, id) {
     return tempDirOf(await canonical(stateRoot), id);
 }
-/** Create a session's temp dir (0700) and its identity marker. An existing path fails instead of being reused. */
+const markerText = (stateDir, id) => JSON.stringify({ stateDir, id });
+/** Set-up failed after this call's mkdir; the message names the dir, and why it was left if rollback couldn't remove it. */
+class TempDirSetupError extends Error {
+    constructor(dir, cause, left) {
+        super(`Could not set up session temp dir ${dir}: ${cause.message}` + (left ? `; left it in place: ${left}` : ""));
+    }
+}
+/**
+ * Create a session's temp dir (0700) and its identity marker. An existing path fails instead of being reused. If the
+ * chmod or marker write fails, the dir this call just made is rolled back (rollBack) and TempDirSetupError thrown.
+ */
 export async function makeTempDir(stateRoot, id) {
     const stateDir = await canonical(stateRoot);
     const dir = tempDirOf(stateDir, id);
     await fs.mkdir(dir, { mode: 0o700 });
-    await fs.chmod(dir, 0o700); // mkdir's mode is masked by the umask
-    await fs.writeFile(path.join(dir, markerName), JSON.stringify({ stateDir, id }), { mode: 0o600, flag: "wx" });
+    const made = await fs.lstat(dir);
+    let markerOurs = false;
+    try {
+        await fs.chmod(dir, 0o700); // mkdir's mode is masked by the umask
+        markerOurs = true;
+        await fs.writeFile(path.join(dir, markerName), markerText(stateDir, id), { mode: 0o600, flag: "wx" })
+            .catch((error) => {
+            if (error.code === "EEXIST")
+                markerOurs = false;
+            throw error;
+        });
+    }
+    catch (error) {
+        throw new TempDirSetupError(dir, error, await rollBack(dir, made, markerOurs));
+    }
+}
+/**
+ * Undo this call's own fresh mkdir, which needs no marker to prove: the dir must still be the one mkdir made (lstat:
+ * same dev, inode and owner, not a symlink), holding at most the regular marker file this call wrote. Unlinks that,
+ * then rmdir; never recursive. Returns why the dir was left in place, or null once removed.
+ */
+async function rollBack(dir, made, markerOurs) {
+    try {
+        const now = await fs.lstat(dir);
+        if (!now.isDirectory() || now.dev !== made.dev || now.ino !== made.ino || now.uid !== made.uid) {
+            return "it was replaced after this startup created it";
+        }
+        const entries = await fs.readdir(dir);
+        if (entries.some((name) => name !== markerName) || (entries.length && !markerOurs)) {
+            return "it holds files this startup didn't write";
+        }
+        if (entries.length) {
+            const marker = await fs.lstat(path.join(dir, markerName));
+            if (!marker.isFile() || marker.uid !== made.uid)
+                return "its marker isn't the regular file this startup wrote";
+            await fs.unlink(path.join(dir, markerName));
+        }
+        await fs.rmdir(dir);
+        return null;
+    }
+    catch (error) {
+        return `rollback failed: ${error.message}`;
+    }
 }
 /** Why dir can't be proven this state dir's temp dir for session id (or `gone`), or null when it is. */
 async function unproven(stateDir, id, dir) {
@@ -50,9 +101,11 @@ async function unproven(stateDir, id, dir) {
     const marker = await fs.lstat(markerPath).catch(() => null);
     if (!marker?.isFile() || marker.uid !== stat.uid)
         return "no identity marker";
-    const named = await fs.readFile(markerPath, "utf8").then((text) => JSON.parse(text), () => null);
-    const ours = JSON.stringify(named) === JSON.stringify({ stateDir, id });
-    return ours ? null : "its marker names another state dir or session";
+    // Compared as written, never parsed, so a malformed marker is a failed proof rather than an error.
+    const text = await fs.readFile(markerPath, "utf8").catch(() => null);
+    if (text === null)
+        return "its identity marker is unreadable";
+    return text === markerText(stateDir, id) ? null : "its marker doesn't name this state dir and session";
 }
 /**
  * stop's removal of a session's temp dir: only once proven (see unproven). Anything else is left in place and named on

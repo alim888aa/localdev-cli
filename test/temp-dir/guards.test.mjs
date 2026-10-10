@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
+import { promises as fsPromises } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import { lstat, mkdir, mkdtemp, readFile, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -25,6 +26,7 @@ const otherState = await import("../../dist/state.js?other-state");
 process.env.LOCAL_CLI_STATE_DIR = alias;
 const { removeOrphanTempDirs, removeSessionDirs, reserveSession } = await import("../../dist/state.js");
 
+const tempPrefix = `lc-${createHash("sha256").update(await realpath(real)).digest("hex").slice(0, 8)}-`;
 const made = [];
 after(async () => {
   for (const { id } of await viaReal("status").catch(() => [])) await viaReal("stop", id).catch(() => undefined);
@@ -35,8 +37,11 @@ after(async () => {
 
 // The CLI on the real (canonical) path, while this process uses the alias.
 async function viaReal(...args) {
-  const { stdout } = await exec(process.execPath, [cli, ...args], { env: { ...process.env, LOCAL_CLI_STATE_DIR: real }, cwd: root });
-  return JSON.parse(stdout);
+  return JSON.parse((await viaRealWithStderr(...args)).stdout);
+}
+
+function viaRealWithStderr(...args) {
+  return exec(process.execPath, [cli, ...args], { env: { ...process.env, LOCAL_CLI_STATE_DIR: real }, cwd: root });
 }
 
 // A process-less session; "failed", so its ports don't count as taken.
@@ -150,7 +155,7 @@ test("stop leaves a symlink, another state dir's folder or a forged path where a
 
   const swapped = await reserve();
   await foreignFolderAt(swapped.tempDir);
-  assert.match(await stderrOf(() => removeSessionDirs(swapped)), /its marker names another state dir or session/);
+  assert.match(await stderrOf(() => removeSessionDirs(swapped)), /its marker doesn't name this state dir and session/);
   assert.ok(await exists(swapped.tempDir));
 
   const keeper = await reserve();
@@ -183,4 +188,65 @@ test("a reservation whose receipt can't be written leaves no session dir and no 
   }), /BigInt/);
   assert.equal(await exists(reserved.dir), false);
   assert.equal(await exists(path.join("/tmp", prefix + reserved.id)), false);
+});
+
+test("stop through the CLI leaves a dir with a malformed marker, says why, and still stops the session", async () => {
+  const receipt = await reserve();
+  made.push(receipt.tempDir);
+  await writeFile(path.join(receipt.tempDir, ".localdev-session"), "{");
+  const { stdout, stderr } = await viaRealWithStderr("stop", receipt.id);
+  assert.deepEqual(JSON.parse(stdout), { id: receipt.id, stopped: true });
+  assert.match(stderr, /Did not remove session temp dir .*marker doesn't name this state dir and session/);
+  assert.ok(await exists(receipt.tempDir), "an unproven dir stays");
+  assert.deepEqual(await viaReal("status", receipt.id), [{ id: receipt.id, state: "gone" }]);
+});
+
+// Make the next reservation's set-up fail at `step` (the marker write or the chmod) after running `before` on its dir.
+async function failingReservation(step, before = async () => undefined) {
+  const original = fsPromises[step];
+  let reserved;
+  fsPromises[step] = async (target, ...rest) => {
+    const dir = step === "chmod" ? target : path.dirname(target);
+    if (!reserved || dir !== path.join("/tmp", `${tempPrefix}${reserved.id}`)) return original(target, ...rest);
+    await before(dir, () => original(target, ...rest));
+    throw Object.assign(new Error(`${step} failed: no space left on device`), { code: "ENOSPC" });
+  };
+  try {
+    const failure = await reserveSession(["app"], (id, dir, ports) => {
+      reserved = { id, dir };
+      return { id, fixture: "guard", projectRoot: base, commit: null, adapterPath: "", sessionDir: dir, dataDir: path.join(dir, "data"),
+        ports, urls: {}, processes: [], state: "failed", ownerPid: process.pid, createdAt: new Date().toISOString() };
+    }).then(() => null, (error) => error);
+    return { failure, ...reserved, tempDir: path.join("/tmp", `${tempPrefix}${reserved.id}`) };
+  } finally {
+    fsPromises[step] = original;
+  }
+}
+
+test("a failed marker write or chmod rolls back only the dir that startup just made", async () => {
+  for (const [step, before] of [["writeFile", (dir, write) => write()], ["chmod", undefined]]) {
+    const { failure, dir, tempDir } = await failingReservation(step, before);
+    assert.match(failure?.message ?? "", new RegExp(`Could not set up session temp dir ${tempDir}: ${step} failed`));
+    assert.doesNotMatch(failure.message, /left it in place/);
+    assert.equal(await exists(tempDir), false, `${step}: the half-made temp dir (and a partial marker) is gone`);
+    assert.equal(await exists(dir), false, `${step}: the reservation is undone`);
+  }
+});
+
+test("rollback leaves a dir that was replaced or holds something else, and names it in the failure", async () => {
+  const replaced = await failingReservation("writeFile", async (dir) => {
+    await rename(dir, `${dir}-moved`);
+    made.push(`${dir}-moved`, dir);
+    await mkdir(dir, { mode: 0o700 });
+  });
+  assert.match(replaced.failure.message, /left it in place: it was replaced after this startup created it/);
+  assert.ok(await exists(replaced.tempDir), "the replacement stays");
+  assert.ok(await exists(`${replaced.tempDir}-moved`), "and so does the original, wherever it went");
+
+  const crowded = await failingReservation("writeFile", async (dir) => {
+    made.push(dir);
+    await writeFile(path.join(dir, "someone-elses"), "keep\n");
+  });
+  assert.match(crowded.failure.message, /left it in place: it holds files this startup didn't write/);
+  assert.equal(await readFile(path.join(crowded.tempDir, "someone-elses"), "utf8"), "keep\n");
 });
