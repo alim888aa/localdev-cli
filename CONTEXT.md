@@ -94,10 +94,10 @@ Who asks for things, and how.
 
 - **The human** asks in the localdev `Factory · owner` T3 thread.
 - **Agents** file bugs and requests with `localdev issue bug|request --submit`
-  (docs/issues.md). Today that applies the plain `bug` / `enhancement` labels,
-  not `source:feedback` (#30 fixes that). Until every client runs a CLI
-  with #30, triage reads a new issue with only `bug` or `enhancement` as
-  `source:feedback`.
+  (docs/issues.md). That applies `source:feedback` plus `type:bug` or
+  `type:feature`. CLIs older than #30 apply the plain `bug` / `enhancement`
+  labels instead, so until every client runs a newer build, triage reads a
+  new issue with only `bug` or `enhancement` as `source:feedback`.
 - **Factory jobs in other projects** (agent-org skills `worker`, `verifier`,
   `upkeep`, `review-regressions`, `issue-maker`, `setup-factory`) call
   `localdev startup <fixture>`, `status` and `stop` for browser proof.

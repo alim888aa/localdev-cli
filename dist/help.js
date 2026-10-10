@@ -137,7 +137,8 @@ Run from the affected project's checkout. Without --input, a terminal user
 answers prompts. Unattended agents supply a JSON file. Without --submit, the
 command prints a draft; a terminal user can confirm publication after seeing
 it. --submit publishes directly to the public repo alim888aa/localdev-cli with
-a bug or enhancement label; it needs authenticated gh and a known CLI commit.
+the source:feedback label plus type:bug or type:feature; it needs
+authenticated gh and a known CLI commit.
 Without gh, open the printed link to file the draft from a browser.
 Every report must say who sent it: reporter { source, agentId, project }.
 Issues are public: review the draft for secrets and personal data first.
@@ -157,8 +158,8 @@ JSON input requires: reporter, title, summary, expected, steps, impact.
   verify      Optional observable fix check.
 
 The command adds project and CLI commits. --session adds safe session details.
---submit publishes with the bug label; without it, you get a draft. Remove
-credentials and personal data from your input.
+--submit publishes with the type:bug and source:feedback labels; without it,
+you get a draft. Remove credentials and personal data from your input.
 
 Example:
   localdev issue bug --input report.json --session <session-id>`,
@@ -175,7 +176,8 @@ JSON input requires: reporter, title, task, desired, whyShared, acceptance.
   impact      Optional work blocked or repeated.
   evidence    Optional related work or sanitized evidence.
 
---submit publishes with the enhancement label; without it, you get a draft.
+--submit publishes with the type:feature and source:feedback labels; without
+it, you get a draft.
 
 Example:
   localdev issue request --input request.json`,
