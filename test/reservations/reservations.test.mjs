@@ -56,8 +56,8 @@ async function world(t) {
   return { scratch, state, run, start };
 }
 
-async function abandoned(world) {
-  const writer = world.start("pause", "startup");
+async function abandoned(world, mode = "pause") {
+  const writer = world.start(mode, "startup");
   const { dir } = await writer.event("reserved");
   const session = path.dirname(dir);
   assert.equal((await lstat(dir)).isDirectory(), true);
@@ -87,6 +87,17 @@ test("exact stop reclaims a killed reservation and remains idempotent", { timeou
   assert.deepEqual(await w.run("stop", lost.id), { id: lost.id, stopped: true, alreadyGone: true });
   assert.deepEqual(await w.run("status", lost.id), [{ id: lost.id, state: "gone" }]);
 });
+
+for (const command of ["startup", "stop"]) {
+  test(`${command} recovers a writer killed before receipt rename`, { timeout: 30000 }, async (t) => {
+    const w = await world(t);
+    const lost = await abandoned(w, "pause-write");
+    assert.equal((await readdir(lost.session)).some((name) => /^receipt\.json\.\d+\.tmp$/.test(name)), true);
+    const result = await w.run(command, ...(command === "stop" ? [lost.id] : []));
+    assert.equal(command === "startup" ? result.state : result.stopped, command === "startup" ? "ready" : true);
+    await assert.rejects(lstat(lost.session), { code: "ENOENT" });
+  });
+}
 
 for (const command of ["startup", "stop"]) {
   test(`${command} waits for a live reservation to publish its receipt`, { timeout: 30000 }, async (t) => {
@@ -159,4 +170,19 @@ test("exact stop does not follow a symlinked sessions root", { timeout: 30000 },
   await symlink(outside, path.join(w.state, "sessions"), "dir");
   assert.deepEqual(await w.run("stop", id), { id, stopped: true, alreadyGone: true });
   assert.equal((await lstat(path.join(outside, id, "data"))).isDirectory(), true);
+});
+
+test("startup tolerates a normal stop removing a session during the recovery sweep", { timeout: 30000 }, async (t) => {
+  const w = await world(t);
+  const first = await w.run("startup");
+  const stopping = w.start("pause-remove", "stop", first.id);
+  await stopping.event("removing");
+  const starting = w.start("pause-scan", "startup");
+  await starting.event("scanning");
+  stopping.process.send("release");
+  assert.equal((await stopping.done).code, 0);
+  starting.process.send("release");
+  const result = await starting.done;
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(JSON.parse(result.stdout).state, "ready");
 });
