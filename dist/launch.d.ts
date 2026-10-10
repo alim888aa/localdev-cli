@@ -1,5 +1,9 @@
 import type { OutboundPolicy } from "./outbound.js";
 import type { OwnedProcess, ServiceSpec } from "./types.js";
+/** A failed app/web readiness wait with an unrelated listener: startup may retry the allocation. */
+export declare class StartupPortCollisionError extends Error {
+    constructor(name: string, port: number);
+}
 /**
  * A spawned service: record `owned` in the receipt first, then wait for it with ready(). If ready() fails, the
  * caller either stops every recorded process (startup) or calls abandon() for this one alone (a kill's restart).
