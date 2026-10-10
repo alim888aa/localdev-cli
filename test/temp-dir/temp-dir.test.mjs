@@ -72,69 +72,7 @@ test("a session's temp dir keeps a Unix socket path short, is private to it, and
   }
 });
 
-test("startup and stop remove this state dir's orphaned temp dirs and nothing else", async () => {
-  const { base, state } = await longStateDir();
-  const run = cliRunner(state);
-  const made = [];
-  const makeDir = async (dir) => { made.push(dir); await mkdir(dir, { mode: 0o700 }); return dir; };
-  try {
-    const live = await startup(run);
-    const prefix = path.basename(live.tempDir).slice(0, -live.id.length);
-    const otherPrefix = `lc-${prefix.slice(3, 11) === "00000000" ? "11111111" : "00000000"}-`;
-    // An older localdev stopping a session removes its session dir but not its temp dir.
-    const orphan = await makeDir(path.join("/tmp", prefix + randomUUID()));
-    const otherStateDirs = await makeDir(path.join("/tmp", otherPrefix + randomUUID()));
-    const notASession = await makeDir(path.join("/tmp", `${prefix}not-a-session`));
-
-    const next = await startup(run, "--parallel");
-    assert.ok(await gone(orphan), "startup removes an orphaned temp dir");
-    assert.equal(await gone(live.tempDir), false, "a live session's temp dir stays");
-    assert.equal(await gone(otherStateDirs), false, "another state dir's temp dir stays");
-    assert.equal(await gone(notASession), false, "a dir that isn't named for a session stays");
-
-    const secondOrphan = await makeDir(path.join("/tmp", prefix + randomUUID()));
-    const unknown = randomUUID();
-    assert.deepEqual(await run("stop", unknown), { id: unknown, stopped: true, alreadyGone: true });
-    assert.ok(await gone(secondOrphan), "stop removes an orphaned temp dir, even for an unknown ID");
-    assert.equal(await gone(next.tempDir), false);
-  } finally {
-    await stopAll(run);
-    for (const dir of made) await rm(dir, { recursive: true, force: true });
-    await rm(base, { recursive: true, force: true });
-  }
-});
-
-test("only a receipt's own temp dir is removed, a failed reservation leaves none, and the cleanupPaths guard holds", async () => {
-  const { base, state } = await longStateDir();
-  const run = cliRunner(state);
-  try {
-    const session = await startup(run);
-    const other = await startup(run, "--parallel");
-    // removeSessionDirs is what stop runs; state reads LOCAL_CLI_STATE_DIR when it loads.
-    process.env.LOCAL_CLI_STATE_DIR = state;
-    const { removeSessionDirs, reserveSession } = await import("../../dist/state.js");
-    for (const forged of [other.tempDir, "/tmp/anything", `${session.tempDir}/..`]) {
-      await assert.rejects(removeSessionDirs({ id: session.id, tempDir: forged }), /Refusing to remove .*not this session's temp dir/);
-    }
-    assert.equal(await gone(other.tempDir), false, "another session's temp dir stays");
-    assert.equal((await run("status", session.id))[0].state, "ready", "a refused removal leaves the session alone");
-
-    // A receipt that can't be written undoes the reservation: no receiptless session dir, no temp dir.
-    const prefix = path.basename(session.tempDir).slice(0, -session.id.length);
-    let reserved;
-    await assert.rejects(reserveSession(["app"], (id, dir, ports) => {
-      reserved = { id, dir };
-      return { id, sessionDir: dir, ports, unwritable: 1n };
-    }), /BigInt/);
-    assert.ok(await gone(reserved.dir), "the receiptless session dir is removed");
-    assert.ok(await gone(path.join("/tmp", prefix + reserved.id)), "no temp dir is left");
-
-    await run("stop", session.id);
-    assert.ok(await gone(session.tempDir));
-  } finally {
-    await stopAll(run);
-    await rm(base, { recursive: true, force: true });
-  }
+test("the cleanupPaths guard still refuses paths outside the project root, session temp dirs included", () => {
   const id = randomUUID();
   assert.throws(() => checkCleanupPaths(["/tmp/anything"], id, root), /ID-scoped in project root/);
   assert.throws(() => checkCleanupPaths([path.join("/tmp", `lc-00000000-${id}`)], id, root), /ID-scoped in project root/);

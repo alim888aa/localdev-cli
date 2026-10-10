@@ -22,7 +22,8 @@ export interface SessionContext {
     dataDir: string;
     /**
      * A short, private (0700) temp dir for this session alone, for TMPDIR: Unix sockets made under dataDir can pass
-     * the macOS 104-byte path limit. The CLI creates it and removes it with the session.
+     * the macOS 104-byte path limit. The CLI creates it and removes it with the session, once its `.localdev-session`
+     * marker (keep it) proves it is the session's.
      */
     tempDir: string;
     /** Ports clients and URLs use. */

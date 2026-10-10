@@ -24,11 +24,17 @@ The CLI owns the session; each project's adapter says what to run.
   read-modify-write goes through `updateReceipt` (or `withReceipt` when the
   write must land before a side effect).
 - **Session temp dir**: `tempDir`, a short private directory
-  (`/tmp/lc-<state-dir hash>-<id>`, 0700) the CLI makes for one session so
-  adapters can point `TMPDIR` at it; Unix socket paths under the state
-  directory pass macOS's 104-byte limit. `stop` removes it, and `startup` and
-  `stop` remove any whose session directory is gone (an **orphaned** temp dir).
-  It is never an adapter `cleanupPaths` entry.
+  (`/tmp/lc-<hash of the canonical state dir>-<id>`, 0700) the CLI makes for
+  one session on every platform, so adapters can point `TMPDIR` at it; Unix
+  socket paths under the state directory pass macOS's 104-byte limit. The CLI
+  writes a `.localdev-session` **marker** inside it at creation (canonical
+  state dir and session ID). A temp dir is **proven** when its path is the one
+  for that canonical state dir and ID, `lstat` shows a real directory (never a
+  symlink) owned by this user, and its marker names the same state dir and ID.
+  `stop` removes a proven one and leaves anything else with a stderr line.
+  `startup` and `stop` also remove proven ones whose session directory is gone
+  (an **orphaned** temp dir). The `temp-dir` owner holds these rules. It is
+  never an adapter `cleanupPaths` entry.
 - **State lock**: the loopback-port mutex that serialises receipt changes and
   port reservation (`withStateLock`; the legacy directory is
   `allocation.lock`). Not reentrant. _Avoid_: "allocation lock" in new code.
@@ -175,8 +181,13 @@ from.
   and `issue` print text.
 - Never signal a process whose identity isn't verified.
 - Never delete outside the session's own paths (the `cleanupPaths` guard). The
-  CLI's own exception is an orphaned session temp dir: fixed name, this state
-  directory's hash, owned by this user, and no session directory left.
+  one exception, approved by the owner on PR #37: the CLI's own session temp
+  dirs in `/tmp`. `stop` and the orphan sweep remove one only when it is
+  proven (see **Session temp dir**): the canonical (realpath) state dir and
+  ID give its exact path, `lstat` shows a directory owned by this user (a
+  symlink is never followed or removed), and the marker written at creation
+  names the same canonical state dir and ID. The name's hash alone never
+  counts. The sweep also needs the session directory to be gone.
 - `status` never prints env, specs or credentials.
 
 ## Direction

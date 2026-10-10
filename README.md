@@ -161,7 +161,8 @@ ports to **every** service and seed command; a service with a hard-coded port ca
 still collide. A session's `dataDir` belongs to that session only. Its `tempDir`
 is a short private directory (`/tmp/lc-<hash>-<session-id>`, mode 0700) for
 `TMPDIR`: Unix sockets under `dataDir` can pass macOS's 104-byte path limit.
-`status` shows it, and `stop <id>` removes it. The adapter
+`status` shows it, and `stop <id>` removes it once its `.localdev-session`
+marker proves it is that session's. The adapter
 must keep fixtures local and never print passwords into service or seed logs.
 If it creates credentials, put them in a `0600` file inside `sessionDir` and
 return only its path as `credentialsFile`.

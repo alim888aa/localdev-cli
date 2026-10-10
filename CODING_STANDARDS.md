@@ -15,7 +15,7 @@ whole repo.
   imports them.
 - Imports flow down: `cli`, then `session` / `fault` / `issue`, then `launch`,
   `proxy` and `adapter`, then `supervised` and `state`, then `listener`,
-  `process-table`, `run-sync` and `checkout`. A lower owner never imports a
+  `process-table`, `temp-dir`, `run-sync` and `checkout`. A lower owner never imports a
   higher one.
 - `test/` holds the tests and their fixtures; a suite with its own fixtures gets
   a subfolder. `dist/` is generated.
@@ -51,6 +51,8 @@ Give each concept one owner. The current owners are:
 - `outbound` / `outbound-preload`: the outbound policy.
 - `run-sync`: the only synchronous command runner (see its comment for why).
 - `issue`: drafting and filing localdev issues.
+- `temp-dir`: session temp dirs in `/tmp`: their names, identity markers, and
+  the proof every removal of one needs (stop's and the orphan sweep's).
 
 Rules:
 
@@ -122,7 +124,8 @@ for things to remove or combine before adding another layer.
   except where the lock is already held by design (replacing a session).
 - Status output never includes service env, specs or credentials.
 - Never delete outside a session's own paths (`cleanupPaths` must be
-  ID-scoped in the project root).
+  ID-scoped in the project root). The one exception is a proven session temp
+  dir (CONTEXT.md), removed only through `temp-dir`.
 - Keep adapter and receipt changes additive: an older adapter or receipt must
   keep working (docs/adapter.md).
 
@@ -198,6 +201,6 @@ suppression or raise the baseline to pass.
   `node_modules/` is installed.
 - **Entry files started by path:** `supervisor`, `guard`, `proxy-process` and
   `outbound-preload`. knip treats them as entries (`knip.json`).
-- **File limits today:** `src/` holds 21 files, over the ten-file folder
+- **File limits today:** `src/` holds 22 files, over the ten-file folder
   limit, and `session`, `fault` and `issue` are over 300 lines. They may not
   grow; a new file in `src/` needs a new owner.
