@@ -173,7 +173,8 @@ function render(kind, fields, context) {
             "## Project context", ...contextLines,
             "## Related work", evidence || "None supplied.",
         ])];
-    return { title, body: `${body.join("\n\n")}\n`, label: kind === "bug" ? "bug" : "enhancement" };
+    // The factory triages by these labels; source:feedback marks a report filed by a client agent.
+    return { title, body: `${body.join("\n\n")}\n`, labels: [kind === "bug" ? "type:bug" : "type:feature", "source:feedback"] };
 }
 /** Thrown only when GitHub definitely created nothing, so the caller can print the draft for someone else. */
 class NotPublishedError extends Error {
@@ -196,7 +197,7 @@ function findCreated(title, body, postStartedAt) {
         && Date.parse(item.created_at) >= postStartedAt - 60_000) ?? null;
 }
 // REST rather than `gh issue create`: cloud sandboxes block GitHub GraphQL but allow REST.
-async function publish(title, body, label) {
+async function publish({ title, body, labels }) {
     const temporary = await fs.mkdtemp(path.join(os.tmpdir(), "localdev-issue-"));
     const bodyFile = path.join(temporary, "body.md");
     try {
@@ -206,7 +207,7 @@ async function publish(title, body, label) {
         try {
             created = JSON.parse(runSync("gh", [
                 "api", `repos/${REPO}/issues`, "-X", "POST",
-                "-f", `title=${title}`, "-F", `body=@${bodyFile}`, "-f", `labels[]=${label}`,
+                "-f", `title=${title}`, "-F", `body=@${bodyFile}`, ...labels.flatMap((label) => ["-f", `labels[]=${label}`]),
             ]));
         }
         catch (error) {
@@ -233,8 +234,8 @@ async function publish(title, body, label) {
         catch {
             throw new Error(`Issue was created at ${url}, but readback failed; inspect it before retrying`);
         }
-        if (saved.title !== title || saved.html_url !== url || !saved.labels.some((item) => item.name === label)) {
-            throw new Error(`Issue was created at ${url}, but its title or label did not match; inspect it before retrying`);
+        if (saved.title !== title || saved.html_url !== url || !labels.every((label) => saved.labels.some((item) => item.name === label))) {
+            throw new Error(`Issue was created at ${url}, but its title or labels did not match; inspect it before retrying`);
         }
         return url;
     }
@@ -244,11 +245,11 @@ async function publish(title, body, label) {
 }
 /** A link that opens GitHub's new-issue form with this report filled in, for agents and people without gh. */
 function newIssueLink(report) {
-    const url = `https://github.com/${REPO}/issues/new?${new URLSearchParams({ title: report.title, body: report.body, labels: report.label })}`;
+    const url = `https://github.com/${REPO}/issues/new?${new URLSearchParams({ title: report.title, body: report.body, labels: report.labels.join(",") })}`;
     return url.length <= MAX_ISSUE_URL ? url : null;
 }
 function printDraft(report) {
-    console.log(`# ${report.title}\n\n${report.body}\nLabel: ${report.label}\n`);
+    console.log(`# ${report.title}\n\n${report.body}\nLabels: ${report.labels.join(", ")}\n`);
     const link = newIssueLink(report);
     console.log(link
         ? `To file it without gh, open this link while signed in to GitHub:\n${link}\n`
@@ -256,8 +257,8 @@ function printDraft(report) {
 }
 async function publishOrPrintDraft(report) {
     try {
-        const url = await publish(report.title, report.body, report.label);
-        console.log(`Created ${url} [${report.label}]`);
+        const url = await publish(report);
+        console.log(`Created ${url} [${report.labels.join(", ")}]`);
     }
     catch (error) {
         if (!(error instanceof NotPublishedError))

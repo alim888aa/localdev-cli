@@ -12,6 +12,7 @@ import { readReceipt } from "./state.js";
 const REPO = "alim888aa/localdev-cli";
 type Kind = "bug" | "request";
 type Fields = Record<string, unknown>;
+type Report = { title: string; body: string; labels: string[] };
 
 // The repo is public, so anyone can open an issue. Every report names who sent it, so the maintainers can tell
 // their own agents' reports apart. Self-declared: it identifies a reporter, it does not authenticate one.
@@ -138,7 +139,7 @@ function render(kind: Kind, fields: Fields, context: {
   cliVersion: string;
   cliRef: string | null;
   session: { id: string; fixture: string; state: string; commit: string | null } | null;
-}): { title: string; body: string; label: string } {
+}): Report {
   const signed = reporter(fields);
   for (const [key] of required[kind]) field(fields, key);
   const shortTitle = field(fields, "title").replace(/\s+/g, " ");
@@ -176,7 +177,8 @@ function render(kind: Kind, fields: Fields, context: {
     "## Project context", ...contextLines,
     "## Related work", evidence || "None supplied.",
   ])];
-  return { title, body: `${body.join("\n\n")}\n`, label: kind === "bug" ? "bug" : "enhancement" };
+  // The factory triages by these labels; source:feedback marks a report filed by a client agent.
+  return { title, body: `${body.join("\n\n")}\n`, labels: [kind === "bug" ? "type:bug" : "type:feature", "source:feedback"] };
 }
 
 /** Thrown only when GitHub definitely created nothing, so the caller can print the draft for someone else. */
@@ -202,7 +204,7 @@ function findCreated(title: string, body: string, postStartedAt: number): { numb
 }
 
 // REST rather than `gh issue create`: cloud sandboxes block GitHub GraphQL but allow REST.
-async function publish(title: string, body: string, label: string): Promise<string> {
+async function publish({ title, body, labels }: Report): Promise<string> {
   const temporary = await fs.mkdtemp(path.join(os.tmpdir(), "localdev-issue-"));
   const bodyFile = path.join(temporary, "body.md");
   try {
@@ -212,7 +214,7 @@ async function publish(title: string, body: string, label: string): Promise<stri
     try {
       created = JSON.parse(runSync("gh", [
         "api", `repos/${REPO}/issues`, "-X", "POST",
-        "-f", `title=${title}`, "-F", `body=@${bodyFile}`, "-f", `labels[]=${label}`,
+        "-f", `title=${title}`, "-F", `body=@${bodyFile}`, ...labels.flatMap((label) => ["-f", `labels[]=${label}`]),
       ]));
     } catch (error) {
       const failure = ghFailure(error);
@@ -225,13 +227,10 @@ async function publish(title: string, body: string, label: string): Promise<stri
     if (!created) throw new Error(`Publishing outcome unknown. Check ${REPO} for an issue titled "${title}" before retrying.`);
     const url = created.html_url;
     let saved: { title: string; html_url: string; labels: Array<{ name: string }>; state: string };
-    try {
-      saved = JSON.parse(runSync("gh", ["api", `repos/${REPO}/issues/${created.number}`]));
-    } catch {
-      throw new Error(`Issue was created at ${url}, but readback failed; inspect it before retrying`);
-    }
-    if (saved.title !== title || saved.html_url !== url || !saved.labels.some((item) => item.name === label)) {
-      throw new Error(`Issue was created at ${url}, but its title or label did not match; inspect it before retrying`);
+    try { saved = JSON.parse(runSync("gh", ["api", `repos/${REPO}/issues/${created.number}`])); }
+    catch { throw new Error(`Issue was created at ${url}, but readback failed; inspect it before retrying`); }
+    if (saved.title !== title || saved.html_url !== url || !labels.every((label) => saved.labels.some((item) => item.name === label))) {
+      throw new Error(`Issue was created at ${url}, but its title or labels did not match; inspect it before retrying`);
     }
     return url;
   } finally {
@@ -240,23 +239,23 @@ async function publish(title: string, body: string, label: string): Promise<stri
 }
 
 /** A link that opens GitHub's new-issue form with this report filled in, for agents and people without gh. */
-function newIssueLink(report: { title: string; body: string; label: string }): string | null {
-  const url = `https://github.com/${REPO}/issues/new?${new URLSearchParams({ title: report.title, body: report.body, labels: report.label })}`;
+function newIssueLink(report: Report): string | null {
+  const url = `https://github.com/${REPO}/issues/new?${new URLSearchParams({ title: report.title, body: report.body, labels: report.labels.join(",") })}`;
   return url.length <= MAX_ISSUE_URL ? url : null;
 }
 
-function printDraft(report: { title: string; body: string; label: string }): void {
-  console.log(`# ${report.title}\n\n${report.body}\nLabel: ${report.label}\n`);
+function printDraft(report: Report): void {
+  console.log(`# ${report.title}\n\n${report.body}\nLabels: ${report.labels.join(", ")}\n`);
   const link = newIssueLink(report);
   console.log(link
     ? `To file it without gh, open this link while signed in to GitHub:\n${link}\n`
     : `To file it without gh, open https://github.com/${REPO}/issues/new and paste the draft above.\n`);
 }
 
-async function publishOrPrintDraft(report: { title: string; body: string; label: string }): Promise<void> {
+async function publishOrPrintDraft(report: Report): Promise<void> {
   try {
-    const url = await publish(report.title, report.body, report.label);
-    console.log(`Created ${url} [${report.label}]`);
+    const url = await publish(report);
+    console.log(`Created ${url} [${report.labels.join(", ")}]`);
   } catch (error) {
     if (!(error instanceof NotPublishedError)) throw error;
     printDraft(report);

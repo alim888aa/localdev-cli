@@ -94,7 +94,8 @@ proxy with the session.
 
 From any project checkout, run `localdev issue bug` or
 `localdev issue request`. The command formats the report with checkout details
-and applies the `bug` or `enhancement` label when published. It previews the
+and applies the `source:feedback` label plus `type:bug` or `type:feature` when
+published. It previews the
 report before asking a person to publish. Unattended agents can supply a JSON
 file and explicitly publish:
 
