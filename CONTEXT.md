@@ -40,6 +40,12 @@ The CLI owns the session; each project's adapter says what to run.
 - **State lock**: the loopback-port mutex that serialises receipt changes and
   port reservation (`withStateLock`; the legacy directory is
   `allocation.lock`). Not reentrant. _Avoid_: "allocation lock" in new code.
+- **Receiptless reservation**: a session directory left before its first
+  receipt was published. Startup and exact-session stop recover it while
+  holding the state lock, which waits out live reservation writers. Recovery
+  removes only real session directories with an empty, real `data` directory
+  and optional regular receipt-write temporary files. Receipts, symlinks and
+  other contents are preserved; recovery never removes a session temp dir.
 - **Checkout**: the project directory a session runs from, always compared by
   its canonical path (`projectRoot`), plus its Git commit.
 

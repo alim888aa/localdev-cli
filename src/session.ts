@@ -9,7 +9,7 @@ import { outboundRefusals, refusalExplanation, type OutboundPolicy } from "./out
 import { isSameProcess, ownIdentity } from "./process-table.js";
 import { countUnit, proxyLaunch } from "./proxy.js";
 import {
-  bindPortsOf, findReceipt, isSessionId, removeOrphanTempDirs, removeSessionDirs, reserveSession, SessionGoneError,
+  bindPortsOf, findReceipt, isSessionId, recoverReservation, removeOrphanTempDirs, removeSessionDirs, reserveSession, SessionGoneError,
   updateLockedReceipt, updateReceipt,
 } from "./state.js";
 import { processAlive, processHealth, spawnSupervised, stopService, waitForSeed } from "./supervised.js";
@@ -299,7 +299,7 @@ export async function describeSession(receipt: SessionReceipt): Promise<object> 
 export async function stopSession(id: string): Promise<{ id: string; stopped: true; alreadyGone?: true }> {
   await removeOrphanTempDirs();
   const receipt = await updateReceipt(id, markStopping).catch(nullIfGone);
-  if (receipt) await stopReceipt(receipt);
+  if (receipt) await stopReceipt(receipt); else await recoverReservation(id);
   return receipt ? { id, stopped: true } : { id, stopped: true, alreadyGone: true };
 }
 
