@@ -92,6 +92,17 @@ again.
 When they ask what's going on, answer from labels: what's building, what's
 in review, what's waiting on them, what landed since they last asked.
 
+Read `possible-plan` issues and **Worth a plan?** in the pinned `Triage log`
+when the human asks what's worth planning; bring it up in chat when
+the same feature keeps showing up. When they decide, quote it on the
+issues as above and in the `Triage log`, with the feature and issue links.
+In a dark project, copy the owner's `> Owner decision: "..."` there.
+Yes: cut the agreed plan (or use the owner's), put `Part of #<plan>` on
+each issue, then remove `possible-plan` from them. No: remove it from
+those issues. You remove the label in either case; clearing it leaves
+their statuses alone. Triage won't suggest that feature again unless
+new issues join the pile.
+
 ## Human comments
 
 `human-comment` means the human wrote on the item from the control
@@ -157,6 +168,7 @@ product. What changes:
   It posts an Owner decision on the item and sends you `decided #<n>`;
   then set the status the decision implies and carry on as after any
   ruling. `merge #<n>` and `deploy <env>` from it are the human's word.
+  Bring recurring **Worth a plan?** suggestions to the owner's chat too.
 - **Merge more yourself.** When an auto-merge check fails, the PR is
   yours to merge if it changes nothing a client sees (refactors, bug fixes
   that restore intended behaviour, maintenance, docs, dependency bumps),

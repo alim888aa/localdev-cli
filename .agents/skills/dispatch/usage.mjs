@@ -342,4 +342,10 @@ function main() {
   spentToday({ root: resolve(opt("root")), now }).then((r) => console.log(JSON.stringify(r, null, 2)));
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) main();
+let entryPath;
+try {
+  entryPath = process.argv[1] && realpathSync(process.argv[1]);
+} catch {
+  // A non-file entry argument means this module is being imported.
+}
+if (entryPath === realpathSync(fileURLToPath(import.meta.url))) main();
