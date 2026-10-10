@@ -1,6 +1,6 @@
 import { listenerPids, ownedListener } from "./listener.js";
 import { spawnSupervised, stopService, waitForService } from "./supervised.js";
-/** A failed app/web readiness wait with an unrelated listener: startup may retry the allocation. */
+/** A startup readiness failure with an unrelated app/web listener: startup may retry the allocation. */
 export class StartupPortCollisionError extends Error {
     constructor(name, port) { super(`Port ${name} (${port}) was taken by an unrelated listener during startup`); }
 }
@@ -37,9 +37,10 @@ export async function launchService(spec, { root, sessionDir, ports, outbound, r
                 catch (error) {
                     // Cancellation wins over a port collision, and never restarts a stopped session.
                     await ensureActive();
-                    if ((check.name === "app" || check.name === "web") &&
-                        listenerPids(check.port).length && !ownedListener(owned, check.port)) {
-                        throw new StartupPortCollisionError(check.name, check.port);
+                    // A proxy can exit on a later port before its first readiness wait observes a listener.
+                    const collision = (role === "proxy" ? checks : [check]).find(({ name, port }) => (name === "app" || name === "web") && listenerPids(port).length && !ownedListener(owned, port));
+                    if (collision) {
+                        throw new StartupPortCollisionError(collision.name, collision.port);
                     }
                     throw error;
                 }

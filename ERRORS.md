@@ -69,9 +69,10 @@ and a pattern proposal opened as the `error-handling` skill says.
   (docs/issues.md); a bug in a project's adapter goes to that project.
 - **Extra patterns:** none.
 - **Retry limits:** startup retries a failed app/web readiness wait only when
-  that port has an unrelated listener, with at most three complete startup
-  attempts and no backoff. Before reallocating it verifies all owned processes
-  stopped and removes the abandoned session and adapter cleanup paths. It
+  that port has an unrelated listener. A failed proxy wait checks all its
+  app/web readiness ports, regardless of their order. There are at most three
+  complete startup attempts and no backoff. Before reallocating it verifies all
+  owned processes stopped and removes the abandoned session and adapter cleanup paths. It
   regenerates the adapter plan on the new allocation; replacement stops the
   selected old session only once. Adapter, seed and other service failures do
   not retry. Other waits have time limits,
