@@ -227,9 +227,13 @@ export async function waitForSeed(child, exitFile, timeoutMs = 300_000, ensureAc
  * once, like a crash, for `fault --mode kill`.
  */
 export async function stopService(record, { hard = false } = {}) {
-    const mainAlive = groupExists(record.pid);
-    if (mainAlive && !isOwned(record) && !guardOwnsGroup(record))
-        return false;
+    let mainAlive = groupExists(record.pid);
+    if (mainAlive && !isOwned(record) && !guardOwnsGroup(record)) {
+        // A concurrent stop or kill can remove the group between the liveness and identity reads.
+        mainAlive = groupExists(record.pid);
+        if (mainAlive)
+            return false;
+    }
     const known = mergeGroups(record.escapedGroups, mainAlive ? findEscapedGroups(record.pid) : [])
         .filter((group) => groupExists(group.pgid));
     // An escaped group is signalled only while a recorded member is still the same process (no PID reuse).
