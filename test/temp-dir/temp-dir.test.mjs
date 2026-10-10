@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { lstat, mkdir, mkdtemp, readdir, realpath, rm } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -121,9 +121,13 @@ test("only a receipt's own temp dir is removed, a failed reservation leaves none
 
     // A receipt that can't be written undoes the reservation: no receiptless session dir, no temp dir.
     const prefix = path.basename(session.tempDir).slice(0, -session.id.length);
-    await assert.rejects(reserveSession(["app"], (id, dir, ports) => ({ id, sessionDir: dir, ports, unwritable: 1n })), /BigInt/);
-    assert.equal((await readdir(path.join(state, "sessions"))).length, 2);
-    assert.equal((await readdir("/tmp")).filter((name) => name.startsWith(prefix)).length, 2);
+    let reserved;
+    await assert.rejects(reserveSession(["app"], (id, dir, ports) => {
+      reserved = { id, dir };
+      return { id, sessionDir: dir, ports, unwritable: 1n };
+    }), /BigInt/);
+    assert.ok(await gone(reserved.dir), "the receiptless session dir is removed");
+    assert.ok(await gone(path.join("/tmp", prefix + reserved.id)), "no temp dir is left");
 
     await run("stop", session.id);
     assert.ok(await gone(session.tempDir));
