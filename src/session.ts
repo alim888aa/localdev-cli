@@ -4,7 +4,7 @@ import { createInterface } from "node:readline/promises";
 import { checkCleanupPaths, checkPlan, launchDescription, loadAdapter } from "./adapter.js";
 import { gitCommit, projectRoot } from "./checkout.js";
 import { activeFaults, resumeAllFaults } from "./fault.js";
-import { launchService } from "./launch.js";
+import { launchService, StartupPortCollisionError } from "./launch.js";
 import { outboundRefusals, refusalExplanation, type OutboundPolicy } from "./outbound.js";
 import { isSameProcess, ownIdentity } from "./process-table.js";
 import { countUnit, proxyLaunch } from "./proxy.js";
@@ -41,11 +41,7 @@ function safeSessionOrigin(urls: Record<string, string>): string {
 
 type ProcessHealth = Awaited<ReturnType<typeof processHealth>>;
 
-/**
- * The one health verdict, so duplicate matching and status cannot drift. A process is alive when its group is owned
- * and running and none of its ports is unreachable or held by another process. A ready session with a port that is
- * unreachable or not owned is degraded; one is healthy when it has processes and every one is alive.
- */
+/** Shared health verdict for matching and status: every process must be owned, alive and reachable. */
 export async function sessionHealth(receipt: SessionReceipt): Promise<{
   processes: Array<{ record: OwnedProcess; groupOwned: boolean; alive: boolean; health: ProcessHealth }>;
   healthy: boolean;
@@ -109,10 +105,7 @@ async function ensureState(id: string, state: SessionReceipt["state"]): Promise<
 
 function ensureStarting(id: string): Promise<void> { return ensureState(id, "starting"); }
 
-/**
- * Record startup's own fields (cleanup paths, plan, processes) while the session is still starting. Under the
- * state lock with a fresh read, so a concurrent stop's "stopping" is never overwritten: startup ends instead.
- */
+/** Save startup fields under the lock; never overwrite a concurrent stop. */
 async function saveStarting(receipt: SessionReceipt): Promise<void> {
   await updateReceipt(receipt.id, (stored) => {
     if (stored.state !== "starting") throw new StartupStoppedError(receipt.id);
@@ -158,88 +151,97 @@ export async function startSession(options: StartOptions): Promise<object> {
   if (replaceId && !isSessionId(replaceId)) throw new Error(`Invalid --replace session ID: ${replaceId}`);
   let choice: StartupChoice = { parallel, replace: Boolean(options.replace), replaceId };
   let receipt: SessionReceipt;
-  for (;;) {
+  for (let attempt = 0; ; attempt++) {
+    for (;;) {
+      try {
+        receipt = await reserveSession(adapter.ports, (id, dir, ports, bindPorts) => ({
+          id, fixture, projectRoot: root, commit: gitCommit(root), adapterPath,
+          sessionDir: dir, dataDir: path.join(dir, "data"), ports,
+          ...(Object.keys(proxyPorts).length ? { bindPorts, proxyPorts } : {}),
+          ...(options.outbound ? { outbound: options.outbound } : {}),
+          urls: {}, processes: [], state: "starting", ownerPid: process.pid, ownerBirth: owner.birth,
+          createdAt: new Date().toISOString(),
+        }), async (receipts) => {
+          if (attempt > 0) {
+            const stopping = await updateLockedReceipt(receipt.id, (stored) => {
+              if (stored.state !== "failed") throw new StartupStoppedError(receipt.id);
+              return markStopping(stored);
+            }).catch(stoppedIfGone(receipt.id));
+            await stopReceipt(stopping, { lockHeld: true });
+            return;
+          }
+          const matches = await matchingSessions(receipts, root, fixture);
+          if (choice.replaceId && !matches.some((item) => item.id === choice.replaceId)) {
+            throw new Error(`Cannot replace ${choice.replaceId}: no healthy matching session for this checkout and fixture`);
+          }
+          if (!matches.length || choice.parallel) return;
+          if (!choice.replace) throw new DuplicateSessionError(matches);
+          const selected = choice.replaceId
+            ? matches.find((item) => item.id === choice.replaceId)
+            : matches.length === 1 ? matches[0] : undefined;
+          if (!selected) throw new DuplicateSessionError(matches);
+          if (selected.state !== "ready") {
+            throw new Error(`Session ${selected.id} is still ${selected.state}; wait for it to settle before replacing it`);
+          }
+          // beforeAllocate already holds the allocation lock, so the locked variants.
+          const stopping = await updateLockedReceipt(selected.id, markStopping).catch(nullIfGone);
+          if (stopping) await stopReceipt(stopping, { lockHeld: true });
+        }, Object.keys(proxyPorts));
+        break;
+      } catch (error) {
+        if (!(error instanceof DuplicateSessionError) || !process.stdin.isTTY || choice.parallel || choice.replace) throw error;
+        choice = await askAboutDuplicates(error.matches);
+      }
+    }
     try {
-      receipt = await reserveSession(adapter.ports, (id, dir, ports, bindPorts) => ({
-        id, fixture, projectRoot: root, commit: gitCommit(root), adapterPath,
-        sessionDir: dir, dataDir: path.join(dir, "data"), ports,
-        ...(Object.keys(proxyPorts).length ? { bindPorts, proxyPorts } : {}),
-        ...(options.outbound ? { outbound: options.outbound } : {}),
-        urls: {}, processes: [], state: "starting", ownerPid: process.pid, ownerBirth: owner.birth,
-        createdAt: new Date().toISOString(),
-      }), async (receipts) => {
-        const matches = await matchingSessions(receipts, root, fixture);
-        if (choice.replaceId && !matches.some((item) => item.id === choice.replaceId)) {
-          throw new Error(`Cannot replace ${choice.replaceId}: no healthy matching session for this checkout and fixture`);
-        }
-        if (!matches.length || choice.parallel) return;
-        if (!choice.replace) throw new DuplicateSessionError(matches);
-        const selected = choice.replaceId
-          ? matches.find((item) => item.id === choice.replaceId)
-          : matches.length === 1 ? matches[0] : undefined;
-        if (!selected) throw new DuplicateSessionError(matches);
-        if (selected.state !== "ready") {
-          throw new Error(`Session ${selected.id} is still ${selected.state}; wait for it to settle before replacing it`);
-        }
-        // beforeAllocate already holds the allocation lock, so the locked variants.
-        const stopping = await updateLockedReceipt(selected.id, markStopping).catch(nullIfGone);
-        if (stopping) await stopReceipt(stopping, { lockHeld: true });
-      }, Object.keys(proxyPorts));
-      break;
+      const context = {
+        id: receipt.id, fixture, projectRoot: root,
+        sessionDir: receipt.sessionDir, dataDir: receipt.dataDir, ports: receipt.ports, bindPorts: bindPortsOf(receipt),
+      };
+      receipt.cleanupPaths = adapter.cleanupPaths?.(context) ?? [];
+      checkCleanupPaths(receipt.cleanupPaths, receipt.id, root);
+      await saveStarting(receipt);
+      const proxy = proxyLaunch(receipt);
+      if (proxy) await launch(receipt, proxy.spec, { ports: proxy.ports, role: proxy.role });
+      const plan = await adapter.createSession(context);
+      checkPlan(plan);
+      receipt.urls = plan.urls ?? {};
+      receipt.credentialsFile = plan.credentialsFile;
+      receipt.services = plan.services;
+      await saveStarting(receipt);
+      for (const service of plan.services) await launch(receipt, service, { ports: context.bindPorts, outbound: receipt.outbound });
+      if (plan.seed) {
+        await ensureStarting(receipt.id);
+        const { owned, child, exitFile } = await spawnSupervised("seed", plan.seed, root, receipt.sessionDir, receipt.outbound);
+        receipt.processes.push(owned);
+        await saveStarting(receipt);
+        await waitForSeed(child, exitFile, plan.seed.timeoutMs, () => ensureStarting(receipt.id));
+        if (!(await stopService(owned))) throw new Error("Could not verify ownership of the seed group during cleanup");
+        receipt.processes = receipt.processes.filter((item) => item.pid !== owned.pid);
+        await saveStarting(receipt);
+      }
+      // Commit ready under the lock so a concurrent stop always wins.
+      await updateReceipt(receipt.id, (stored) => {
+        if (stored.state !== "starting") throw new StartupStoppedError(receipt.id);
+        Object.assign(stored, startupFields(receipt), { state: "ready" });
+      }).catch(stoppedIfGone(receipt.id));
+      receipt.state = "ready";
+      await ensureState(receipt.id, "ready");
+      return await describeSession(receipt);
     } catch (error) {
-      if (!(error instanceof DuplicateSessionError) || !process.stdin.isTTY || choice.parallel || choice.replace) throw error;
-      choice = await askAboutDuplicates(error.matches);
+      receipt.error = (error instanceof Error ? error.message : String(error)) +
+        (receipt.outbound === "deny" ? refusalExplanation(outboundRefusals(receipt.sessionDir)) : "");
+      for (const owned of [...receipt.processes].reverse()) await stopService(owned);
+      await cleanupPaths(receipt);
+      if (error instanceof StartupStoppedError) throw error;
+      await updateReceipt(receipt.id, (stored) => {
+        if (stored.state === "stopping") throw new StartupStoppedError(receipt.id);
+        Object.assign(stored, startupFields(receipt), { error: receipt.error, state: "failed" });
+      }).catch(stoppedIfGone(receipt.id));
+      // Only a confirmed app/web collision retries; adapter, seed and other service failures keep their logs.
+      if (error instanceof StartupPortCollisionError && attempt < 2) continue;
+      throw new Error(`Session ${receipt.id} failed: ${receipt.error}${error instanceof StartupPortCollisionError ? " after 3 startup attempts" : ""}. Logs: ${receipt.sessionDir}`);
     }
-  }
-  try {
-    const context = {
-      id: receipt.id, fixture, projectRoot: root,
-      sessionDir: receipt.sessionDir, dataDir: receipt.dataDir, ports: receipt.ports, bindPorts: bindPortsOf(receipt),
-    };
-    receipt.cleanupPaths = adapter.cleanupPaths?.(context) ?? [];
-    checkCleanupPaths(receipt.cleanupPaths, receipt.id, root);
-    await saveStarting(receipt);
-    // The fault proxy starts first and holds the public ports of proxied names for the whole boot.
-    const proxy = proxyLaunch(receipt);
-    if (proxy) await launch(receipt, proxy.spec, { ports: proxy.ports, role: proxy.role });
-    const plan = await adapter.createSession(context);
-    checkPlan(plan);
-    receipt.urls = plan.urls ?? {};
-    receipt.credentialsFile = plan.credentialsFile;
-    // Kept (0600, never shown by status) so fault --mode kill can restart a service.
-    receipt.services = plan.services;
-    await saveStarting(receipt);
-    for (const service of plan.services) await launch(receipt, service, { ports: context.bindPorts, outbound: receipt.outbound });
-    if (plan.seed) {
-      await ensureStarting(receipt.id);
-      const { owned, child, exitFile } = await spawnSupervised("seed", plan.seed, root, receipt.sessionDir, receipt.outbound);
-      receipt.processes.push(owned);
-      await saveStarting(receipt);
-      await waitForSeed(child, exitFile, plan.seed.timeoutMs, () => ensureStarting(receipt.id));
-      if (!(await stopService(owned))) throw new Error("Could not verify ownership of the seed group during cleanup");
-      receipt.processes = receipt.processes.filter((item) => item.pid !== owned.pid);
-      await saveStarting(receipt);
-    }
-    // Read, check and commit under the lock stop's markStopping takes: ready only if nothing stopped it meanwhile.
-    // It also saves startup's last field changes (escaped groups found by the last readiness wait).
-    await updateReceipt(receipt.id, (stored) => {
-      if (stored.state !== "starting") throw new StartupStoppedError(receipt.id);
-      Object.assign(stored, startupFields(receipt), { state: "ready" });
-    }).catch(stoppedIfGone(receipt.id));
-    receipt.state = "ready";
-    await ensureState(receipt.id, "ready");
-    return await describeSession(receipt);
-  } catch (error) {
-    receipt.error = (error instanceof Error ? error.message : String(error)) +
-      (receipt.outbound === "deny" ? refusalExplanation(outboundRefusals(receipt.sessionDir)) : "");
-    for (const owned of [...receipt.processes].reverse()) await stopService(owned);
-    await cleanupPaths(receipt);
-    if (error instanceof StartupStoppedError) throw error;
-    await updateReceipt(receipt.id, (stored) => {
-      if (stored.state === "stopping") throw new StartupStoppedError(receipt.id);
-      Object.assign(stored, startupFields(receipt), { error: receipt.error, state: "failed" });
-    }).catch(stoppedIfGone(receipt.id));
-    throw new Error(`Session ${receipt.id} failed: ${receipt.error}. Logs: ${receipt.sessionDir}`);
   }
 }
 
@@ -306,20 +308,14 @@ function nullIfGone(error: unknown): null {
   throw error;
 }
 
-/**
- * The first step of stop, run on a fresh read under the state lock (updateReceipt): resume the faults recorded so
- * far, then mark it stopping so no new fault can start. Returns the receipt to stop.
- */
+/** Under the state lock, resume recorded faults and block new ones before stopping. */
 function markStopping(receipt: SessionReceipt): SessionReceipt {
   receipt.state = "stopping";
   resumeAllFaults(receipt);
   return receipt;
 }
 
-/**
- * Stop a receipt markStopping returned; runs outside the lock because service shutdown can take seconds, except for
- * startup --replace, which already holds it (lockHeld).
- */
+/** Stop a marked receipt outside the lock, except replacement or retry (lockHeld). */
 async function stopReceipt(receipt: SessionReceipt, { lockHeld = false } = {}): Promise<void> {
   const id = receipt.id;
   for (const owned of [...receipt.processes].reverse()) {

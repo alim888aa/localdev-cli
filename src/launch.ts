@@ -1,6 +1,12 @@
 import type { OutboundPolicy } from "./outbound.js";
+import { listenerPids, ownedListener } from "./listener.js";
 import { spawnSupervised, stopService, waitForService } from "./supervised.js";
 import type { OwnedProcess, ServiceSpec } from "./types.js";
+
+/** A failed app/web readiness wait with an unrelated listener: startup may retry the allocation. */
+export class StartupPortCollisionError extends Error {
+  constructor(name: string, port: number) { super(`Port ${name} (${port}) was taken by an unrelated listener during startup`); }
+}
 
 /**
  * A spawned service: record `owned` in the receipt first, then wait for it with ready(). If ready() fails, the
@@ -38,7 +44,18 @@ export async function launchService(spec: ServiceSpec, { root, sessionDir, ports
   return {
     owned,
     async ready(ensureActive) {
-      for (const check of checks) await waitForService(child, spec, check.port, owned, ensureActive);
+      for (const check of checks) {
+        try { await waitForService(child, spec, check.port, owned, ensureActive); }
+        catch (error) {
+          // Cancellation wins over a port collision, and never restarts a stopped session.
+          await ensureActive();
+          if ((check.name === "app" || check.name === "web") &&
+            listenerPids(check.port).length && !ownedListener(owned, check.port)) {
+            throw new StartupPortCollisionError(check.name, check.port);
+          }
+          throw error;
+        }
+      }
     },
     async abandon() {
       const stopped = await stopService(owned);
