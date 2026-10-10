@@ -15,7 +15,7 @@ The CLI owns the session; each project's adapter says what to run.
 ## Sessions
 
 - **Session**: one isolated run of a project checkout plus a fixture, named by
-  a UUID, with its own ports, data directory, logs and processes. Stored states
+  a UUID, with its own ports, data directory, temp dir, logs and processes. Stored states
   are `starting`, `ready`, `failed` and `stopping`. Status also derives
   `degraded` (ready, but a listener is unreachable or not owned) and `gone`
   (no receipt: stopped or unknown).
@@ -23,6 +23,12 @@ The CLI owns the session; each project's adapter says what to run.
   It is the source of truth for a session. Only `state` writes it, and every
   read-modify-write goes through `updateReceipt` (or `withReceipt` when the
   write must land before a side effect).
+- **Session temp dir**: `tempDir`, a short private directory
+  (`/tmp/lc-<state-dir hash>-<id>`, 0700) the CLI makes for one session so
+  adapters can point `TMPDIR` at it; Unix socket paths under the state
+  directory pass macOS's 104-byte limit. `stop` removes it, and `startup` and
+  `stop` remove any whose session directory is gone (an **orphaned** temp dir).
+  It is never an adapter `cleanupPaths` entry.
 - **State lock**: the loopback-port mutex that serialises receipt changes and
   port reservation (`withStateLock`; the legacy directory is
   `allocation.lock`). Not reentrant. _Avoid_: "allocation lock" in new code.
@@ -126,8 +132,8 @@ Who asks for things, and how.
 Adapters rely on this contract (docs/adapter.md): a default export with
 `ports`, `defaultFixture`, optional `proxyPorts`, optional `cleanupPaths()` and
 `createSession(ctx)` returning services, a seed, URLs and a credentials file.
-`ctx` carries `id`, `fixture`, `projectRoot`, `sessionDir`, `dataDir`, `ports`
-and `bindPorts`. The CLI owns the env vars `LOCAL_CLI_STATE_DIR`,
+`ctx` carries `id`, `fixture`, `projectRoot`, `sessionDir`, `dataDir`,
+`tempDir`, `ports` and `bindPorts`. The CLI owns the env vars `LOCAL_CLI_STATE_DIR`,
 `LOCAL_CLI_LOCK_PORT` and `LOCALDEV_OUTBOUND_*`.
 
 ## How a fix reaches clients
@@ -168,7 +174,9 @@ from.
 - JSON on stdout for `startup`, `status`, `stop` and `fault` (DESIGN.md). `help`
   and `issue` print text.
 - Never signal a process whose identity isn't verified.
-- Never delete outside the session's own paths (the `cleanupPaths` guard).
+- Never delete outside the session's own paths (the `cleanupPaths` guard). The
+  CLI's own exception is an orphaned session temp dir: fixed name, this state
+  directory's hash, owned by this user, and no session directory left.
 - `status` never prints env, specs or credentials.
 
 ## Direction

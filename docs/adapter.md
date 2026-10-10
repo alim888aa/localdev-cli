@@ -16,6 +16,12 @@ that checkout and its Git commit in every session receipt.
    Pass `context.ports` to **every** listener and seed. Put emulator data and
    other mutable state under `context.dataDir`. If a framework writes build
    files into the checkout, make its build directory unique per session.
+   Point `TMPDIR`, `TMP` and `TEMP` at `context.tempDir` for anything that
+   opens Unix sockets in the temp dir, such as Firebase's Functions emulator.
+   It is a short, private (0700) directory in `/tmp` that the CLI creates for
+   this session and removes on `stop`; a socket under `dataDir` can pass
+   macOS's 104-byte path limit and fail with `listen EINVAL`. CLIs older than
+   this field don't pass it.
 4. If the adapter writes files in the project root, declare those exact paths
    with the pure `cleanupPaths(context)` method **before** `createSession` runs.
    Each path must begin with `.local-cli-<session-id>.`.

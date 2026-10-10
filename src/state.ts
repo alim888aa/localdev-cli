@@ -20,9 +20,54 @@ export function isSessionId(id: string): boolean {
   return /^[0-9a-f-]{36}$/.test(id);
 }
 
-export function sessionPath(id: string): string {
+function sessionPath(id: string): string {
   if (!isSessionId(id)) throw new Error("Invalid session ID");
   return path.join(sessionsRoot, id);
+}
+
+// Session temp dirs sit in /tmp: a Unix socket path is capped at 104 bytes on macOS (108 on Linux), which paths under
+// the state dir or os.tmpdir() can pass. The hash keeps one state dir's orphan sweep off another's sessions.
+const tempRoot = "/tmp";
+const tempPrefix = `lc-${createHash("sha256").update(stateRoot).digest("hex").slice(0, 8)}-`;
+const tempName = /^lc-[0-9a-f]{8}-([0-9a-f-]{36})$/;
+
+class ForeignTempDirError extends Error {
+  constructor(dir: string) { super(`Session temp dir is not the session's own; refusing to remove ${dir}`); }
+}
+
+/** Delete a stopped session's temp dir, then its session dir; a temp dir not of this ID's fixed shape throws first. */
+export async function removeSessionDirs({ id, tempDir }: SessionReceipt): Promise<void> {
+  if (tempDir && (path.dirname(tempDir) !== tempRoot || tempName.exec(path.basename(tempDir))?.[1] !== id)) {
+    throw new ForeignTempDirError(tempDir);
+  }
+  if (tempDir) await fs.rm(tempDir, { recursive: true, force: true });
+  await fs.rm(sessionPath(id), { recursive: true, force: true });
+}
+
+/**
+ * Remove this state dir's temp dirs whose session dir is gone (say, an older localdev stopped it). Made after its
+ * session dir and removed before it, a live one is never taken. Never throws: what it can't remove is named on stderr.
+ */
+export async function removeOrphanTempDirs(): Promise<void> {
+  const names = await fs.readdir(tempRoot).catch((error: Error) => {
+    console.error(`Could not look for orphaned session temp dirs in ${tempRoot}: ${error.message}`);
+    return [];
+  });
+  for (const name of names) {
+    const id = name.startsWith(tempPrefix) ? tempName.exec(name)?.[1] : undefined;
+    if (!id) continue;
+    const dir = path.join(tempRoot, name);
+    try {
+      const live = await fs.lstat(sessionPath(id)).then(() => true, (error: NodeJS.ErrnoException) => {
+        if (error.code === "ENOENT") return false;
+        throw error;
+      });
+      const stat = live ? null : await fs.lstat(dir);
+      if (stat?.isDirectory() && stat.uid === process.getuid?.()) await fs.rm(dir, { recursive: true, force: true });
+    } catch (error) {
+      console.error(`Could not remove orphaned session temp dir ${dir}: ${(error as Error).message}`);
+    }
+  }
 }
 
 export async function readReceipt(id: string): Promise<SessionReceipt> {
@@ -200,12 +245,13 @@ export async function reserveSession(
   makeReceipt: (id: string, dir: string, ports: Record<string, number>, bindPorts: Record<string, number>) => SessionReceipt,
   beforeAllocate?: (receipts: SessionReceipt[]) => Promise<void>,
   bindNames: string[] = [],
-): Promise<SessionReceipt> {
+): Promise<SessionReceipt & { tempDir: string }> {
   if (names.length === 0 || new Set(names).size !== names.length) {
     throw new Error("Adapter must declare unique port names");
   }
   const release = await acquireLock();
   try {
+    await removeOrphanTempDirs();
     if (beforeAllocate) await beforeAllocate(await listReceipts());
     const used = new Set((await listReceipts())
       .filter((item) => item.state === "starting" || item.state === "ready" || item.state === "stopping")
@@ -238,7 +284,11 @@ export async function reserveSession(
     const id = randomUUID();
     const dir = sessionPath(id);
     await fs.mkdir(path.join(dir, "data"), { recursive: true, mode: 0o700 });
-    const receipt = makeReceipt(id, dir, ports, { ...ports, ...bindPorts });
+    // Not recursive, so an existing path (another user's, a planted link) fails; chmod because the umask masks mkdir.
+    const tempDir = path.join(tempRoot, tempPrefix + id);
+    await fs.mkdir(tempDir, { mode: 0o700 });
+    await fs.chmod(tempDir, 0o700);
+    const receipt = { ...makeReceipt(id, dir, ports, { ...ports, ...bindPorts }), tempDir };
     await writeReceipt(receipt);
     return receipt;
   } finally {
