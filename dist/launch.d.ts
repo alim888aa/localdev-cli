@@ -1,6 +1,6 @@
 import type { OutboundPolicy } from "./outbound.js";
 import type { OwnedProcess, ServiceSpec } from "./types.js";
-/** A failed app/web readiness wait with an unrelated listener: startup may retry the allocation. */
+/** A startup readiness failure with an unrelated app/web listener: startup may retry the allocation. */
 export declare class StartupPortCollisionError extends Error {
     constructor(name: string, port: number);
 }
