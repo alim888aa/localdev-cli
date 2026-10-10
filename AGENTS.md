@@ -33,6 +33,7 @@ localdev has no UI, so "browser proof" here means driving the built CLI against 
 `seed-fails`, a proxied `api` port for faults) and an isolated state directory, and writes `<sessionDir>/cli.env`.
 In a subshell, `source` that file, `cd "$CLIENT_PROJECT"` and run `"$LOCALDEV" startup|status|fault|stop`: that runs
 this checkout's build and never sees the machine's real sessions. Stop the nested sessions before the outer one.
+The nested web service uses port name `fixtureWeb`, so it and test apps use random ports outside clients' 3000–3010 range.
 
 A change clients need doesn't reach them on merge. Say in the PR which clients need a re-pin (see **How a fix reaches
 clients** in `CONTEXT.md`); the owner arranges it.

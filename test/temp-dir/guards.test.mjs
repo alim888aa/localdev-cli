@@ -46,7 +46,7 @@ function viaRealWithStderr(...args) {
 
 // A process-less session; "failed", so its ports don't count as taken.
 function reserve(state = { reserveSession }) {
-  return state.reserveSession(["app"], (id, dir, ports) => ({
+  return state.reserveSession(["testApp"], (id, dir, ports) => ({
     id, fixture: "guard", projectRoot: base, commit: null, adapterPath: "", sessionDir: dir, dataDir: path.join(dir, "data"),
     ports, urls: {}, processes: [], state: "failed", ownerPid: process.pid, createdAt: new Date().toISOString(),
   }));
@@ -182,7 +182,7 @@ test("a session reserved while sweeps run keeps its temp dir", async () => {
 test("a reservation whose receipt can't be written leaves no session dir and no temp dir", async () => {
   const prefix = prefixOf(await orphan());
   let reserved;
-  await assert.rejects(reserveSession(["app"], (id, dir, ports) => {
+  await assert.rejects(reserveSession(["testApp"], (id, dir, ports) => {
     reserved = { id, dir };
     return { id, sessionDir: dir, ports, unwritable: 1n };
   }), /BigInt/);
@@ -212,7 +212,7 @@ async function failingReservation(step, before = async () => undefined) {
     throw Object.assign(new Error(`${step} failed: no space left on device`), { code: "ENOSPC" });
   };
   try {
-    const failure = await reserveSession(["app"], (id, dir, ports) => {
+    const failure = await reserveSession(["testApp"], (id, dir, ports) => {
       reserved = { id, dir };
       return { id, fixture: "guard", projectRoot: base, commit: null, adapterPath: "", sessionDir: dir, dataDir: path.join(dir, "data"),
         ports, urls: {}, processes: [], state: "failed", ownerPid: process.pid, createdAt: new Date().toISOString() };
