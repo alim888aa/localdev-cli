@@ -1,0 +1,29 @@
+{
+  "owner": "agent",
+  "budgetUsd": 50,
+  "jobs": {
+    "build": { "provider": "claudeAgent", "model": "claude-opus-5-5", "effort": "high" },
+    "manager": { "provider": "claudeAgent", "model": "claude-opus-5-5", "effort": "high" },
+    "owner": { "provider": "claudeAgent", "model": "claude-opus-5-5", "effort": "high" },
+    "research": { "provider": "claudeAgent", "model": "claude-opus-5-5", "effort": "high" },
+    "review-*": { "provider": "codex", "model": "gpt-6.1-sol", "effort": "high" },
+    "verifier": { "provider": "codex", "model": "gpt-6.1-sol", "effort": "high" },
+    "hunt": { "provider": "codex", "model": "gpt-6.1-sol", "effort": "high" },
+    "watch": { "provider": "codex", "model": "gpt-6.1-sol", "effort": "high" },
+    "scout": { "provider": "codex", "model": "gpt-6.1-sol", "effort": "high" },
+    "dispatch": { "provider": "codex", "model": "gpt-6-luna", "effort": "high" },
+    "triage": { "provider": "codex", "model": "gpt-6-luna", "effort": "high" }
+  },
+  "council": {
+    "client": { "provider": "codex", "model": "gpt-6.1-sol", "effort": "high" },
+    "maintainer": { "provider": "claudeAgent", "model": "claude-sonnet-5-5", "effort": "high" }
+  },
+  "smallChangeMaxFiles": 10,
+  "protected": ["feature:processes"],
+  "paths": {
+    "schema": ["src/types.ts", "docs/adapter.md"],
+    "ui": []
+  },
+  "maxParallel": 2,
+  "upkeep": { "keepDays": 14 }
+}

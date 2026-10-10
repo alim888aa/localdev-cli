@@ -1,0 +1,125 @@
+{
+  "version": 1,
+  "skills": {
+    "code-review": {
+      "source": "alim888aa/agent-org",
+      "sourceType": "github",
+      "skillPath": "skills/code-review/SKILL.md",
+      "computedHash": "3fd89887d25ab7ad02fbf161e8834c7b2164acfbb3b32368ccce9db2e233ac8d"
+    },
+    "council": {
+      "source": "alim888aa/agent-org",
+      "sourceType": "github",
+      "skillPath": "skills/council/SKILL.md",
+      "computedHash": "14541f2aadcfedf8b6285141c3a8022ae471a52b865d21e9a8659eb9e220a395"
+    },
+    "dispatch": {
+      "source": "alim888aa/agent-org",
+      "sourceType": "github",
+      "skillPath": "skills/dispatch/SKILL.md",
+      "computedHash": "d09969fb131edb3b32178b8f77cc49acf3926399b22c0cf0767244f8a07b8c44"
+    },
+    "edge-case-hunter": {
+      "source": "alim888aa/agent-org",
+      "sourceType": "github",
+      "skillPath": "skills/edge-case-hunter/SKILL.md",
+      "computedHash": "7b1ec5e9e1ac05051580db9edc4a4f33baac42fc07453f7690cb95059d849ed8"
+    },
+    "error-handling": {
+      "source": "alim888aa/agent-org",
+      "sourceType": "github",
+      "skillPath": "skills/error-handling/SKILL.md",
+      "computedHash": "a52dfdadd0477ce8f72598d8135372104a47cdab56f318ff1e949ebf06b3bdc4"
+    },
+    "factory-audit": {
+      "source": "alim888aa/agent-org",
+      "sourceType": "github",
+      "skillPath": "skills/factory-audit/SKILL.md",
+      "computedHash": "9ae9e8f1e64e64548394a3666215a732e1a1348891a20fe587c5e753686185ac"
+    },
+    "factory-workflow": {
+      "source": "alim888aa/agent-org",
+      "sourceType": "github",
+      "skillPath": "skills/factory-workflow/SKILL.md",
+      "computedHash": "9c16ab5e177b87d9b8208c59186596c08a914db5c8aa9159515090f0d5e47757"
+    },
+    "issue-maker": {
+      "source": "alim888aa/agent-org",
+      "sourceType": "github",
+      "skillPath": "skills/issue-maker/SKILL.md",
+      "computedHash": "2b6dbf6af9040ced5b4f6619cf6d8299fda147d4b0d3c8cfbc323ec548c59d03"
+    },
+    "manager": {
+      "source": "alim888aa/agent-org",
+      "sourceType": "github",
+      "skillPath": "skills/manager/SKILL.md",
+      "computedHash": "8bf980e616fa8f9e6856b1cc36d48909955b647cef1ba7b2286c37ba12087140"
+    },
+    "owner": {
+      "source": "alim888aa/agent-org",
+      "sourceType": "github",
+      "skillPath": "skills/owner/SKILL.md",
+      "computedHash": "e4d5f67dd4a3232ec34854f84af19c6f35a72fc9d6e3a6f771d97d1c6798597b"
+    },
+    "researcher": {
+      "source": "alim888aa/agent-org",
+      "sourceType": "github",
+      "skillPath": "skills/researcher/SKILL.md",
+      "computedHash": "5619cb541848591366ce1b6518b1a254e2d9764b1fac0ee2b28a97c1aeab94ed"
+    },
+    "review-boundaries": {
+      "source": "alim888aa/agent-org",
+      "sourceType": "github",
+      "skillPath": "skills/review-boundaries/SKILL.md",
+      "computedHash": "eee5eeb95209f155da5fa21d8e9938437c8a44531bfb18492baff6e22d762e0a"
+    },
+    "review-frontend": {
+      "source": "alim888aa/agent-org",
+      "sourceType": "github",
+      "skillPath": "skills/review-frontend/SKILL.md",
+      "computedHash": "675bb08ab5c0174db26bf58287d0a807aa135768f652d034e97e411529280586"
+    },
+    "review-regressions": {
+      "source": "alim888aa/agent-org",
+      "sourceType": "github",
+      "skillPath": "skills/review-regressions/SKILL.md",
+      "computedHash": "15a9853771e491b24b2968fb1641c2ef90ea948a6ead5854bf7b9f897d076ae4"
+    },
+    "setup-factory": {
+      "source": "alim888aa/agent-org",
+      "sourceType": "github",
+      "skillPath": "skills/setup-factory/SKILL.md",
+      "computedHash": "9b30e1aa48674b5d4fab67eefc1c010133563970fbffb6ea4aa4534d4d061602"
+    },
+    "triage": {
+      "source": "alim888aa/agent-org",
+      "sourceType": "github",
+      "skillPath": "skills/triage/SKILL.md",
+      "computedHash": "9ceb82c729cde7424d1707fc1078b859b395b6ee950214b56645555beb39c3d8"
+    },
+    "upkeep": {
+      "source": "alim888aa/agent-org",
+      "sourceType": "github",
+      "skillPath": "skills/upkeep/SKILL.md",
+      "computedHash": "bb7b96b5ab6311eee94e003b9cb6b30d8c084cab36b31b91b5611df33082fd85"
+    },
+    "verifier": {
+      "source": "alim888aa/agent-org",
+      "sourceType": "github",
+      "skillPath": "skills/verifier/SKILL.md",
+      "computedHash": "23e013eb863e290580b0552650e995ed62ed8458901a6c6b2d603b54085862ae"
+    },
+    "watch": {
+      "source": "alim888aa/agent-org",
+      "sourceType": "github",
+      "skillPath": "skills/watch/SKILL.md",
+      "computedHash": "7f117f2ff43b0d6a01585005dbc5c9beddef1769ba6c01f724c3b6dd79f5b274"
+    },
+    "worker": {
+      "source": "alim888aa/agent-org",
+      "sourceType": "github",
+      "skillPath": "skills/worker/SKILL.md",
+      "computedHash": "e9182c0fbcf2f05b9436b26636358a7cf671af86489d96da6bd390c717f4024d"
+    }
+  }
+}

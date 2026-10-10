@@ -1,0 +1,32 @@
+# Wakes the factory's T3 threads on the few GitHub events they act on.
+# Every other event exits here, so it costs no agent run.
+# pull_request_target so conflicted PRs still fire; it never checks out
+# or runs PR code, it only forwards the event's number and label.
+name: factory-wake
+on:
+  issues:
+    types: [opened, labeled, closed]
+  pull_request_target:
+    types: [labeled, closed]
+jobs:
+  wake:
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          DISPATCH_URL: ${{ secrets.FACTORY_DISPATCH_URL }}
+          MANAGER_URL: ${{ secrets.FACTORY_MANAGER_URL }}
+          ACTION: ${{ github.event.action }}
+          LABEL: ${{ github.event.label.name }}
+          NUMBER: ${{ github.event.issue.number || github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          case "$ACTION:$LABEL" in
+            opened:*|closed:*|labeled:agent-ready) url="$DISPATCH_URL" ;;
+            labeled:needs-manager|labeled:needs-human|labeled:human-ready|labeled:human-comment) url="$MANAGER_URL" ;;
+            *) exit 0 ;;
+          esac
+          # Setup labels issues before the webhook secrets exist; that's not a failure.
+          if [ -z "$url" ]; then echo "::warning::factory webhook URL not set yet"; exit 0; fi
+          jq -n --arg action "$ACTION" --arg label "$LABEL" --arg number "$NUMBER" --arg repo "$REPO" \
+            '{action: $action, label: $label, number: $number, repo: $repo}' \
+            | curl -fsS -X POST -H 'content-type: application/json' --data @- "$url"

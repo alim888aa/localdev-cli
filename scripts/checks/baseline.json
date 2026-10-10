@@ -1,0 +1,9 @@
+{
+  "errors/generic-throw": 94,
+  "knip/dependencies": 0,
+  "knip/other": 0,
+  "knip/unused-exports": 6,
+  "knip/unused-files": 0,
+  "knip/unused-types": 3,
+  "process/birth-compared-outside-process-table": 2
+}

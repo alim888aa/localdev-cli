@@ -1,0 +1,7 @@
+{
+  "name": "scratch-client",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "A tiny stand-in for a project that uses localdev, created by localdev's own base fixture."
+}
