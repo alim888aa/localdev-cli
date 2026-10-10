@@ -8,7 +8,7 @@ Read [CONTEXT.md](CONTEXT.md), [CODING_STANDARDS.md](CODING_STANDARDS.md), [ERRO
 in [docs/adapter.md](docs/adapter.md), decisions in [docs/adr](docs/adr). The repo is public: keep secrets, local paths
 and private links out of code, tests, issues and PRs.
 
-Run tests one at a time on a shared machine: build first, then `node --test --test-concurrency=1 test/*.test.mjs`. Wait
+Run tests one at a time on a shared machine: build first, then `node --test --test-concurrency=1 'test/**/*.test.mjs'`. Wait
 on observable state in tests (status, a response, a process), never on a fixed sleep.
 
 Clean up after yourself: stop every session and process you started before you end a turn. The dispatch thread removes

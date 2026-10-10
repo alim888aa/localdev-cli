@@ -1,18 +1,18 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { lstat, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readdir, realpath, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import test from "node:test";
-import { checkCleanupPaths } from "../dist/adapter.js";
+import { checkCleanupPaths } from "../../dist/adapter.js";
 
 const exec = promisify(execFile);
-const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
+const root = fileURLToPath(new URL("../..", import.meta.url)).replace(/\/$/, "");
 const cli = path.join(root, "dist", "cli.js");
-const adapter = path.join(root, "test", "socket.adapter.mjs");
+const adapter = fileURLToPath(new URL("socket.adapter.mjs", import.meta.url));
 
 // A state dir as deep as a T3 worktree's: a socket under its dataDir passes even Linux's 108-byte limit.
 async function longStateDir() {
@@ -104,27 +104,30 @@ test("startup and stop remove this state dir's orphaned temp dirs and nothing el
   }
 });
 
-test("stop refuses a receipt temp dir that isn't the session's own, and the cleanupPaths guard is unchanged", async () => {
+test("only a receipt's own temp dir is removed, a failed reservation leaves none, and the cleanupPaths guard holds", async () => {
   const { base, state } = await longStateDir();
   const run = cliRunner(state);
-  let restore;
   try {
     const session = await startup(run);
     const other = await startup(run, "--parallel");
-    const receiptFile = path.join(state, "sessions", session.id, "receipt.json");
-    const receipt = JSON.parse(await readFile(receiptFile, "utf8"));
-    restore = () => writeFile(receiptFile, JSON.stringify(receipt));
+    // removeSessionDirs is what stop runs; state reads LOCAL_CLI_STATE_DIR when it loads.
+    process.env.LOCAL_CLI_STATE_DIR = state;
+    const { removeSessionDirs, reserveSession } = await import("../../dist/state.js");
     for (const forged of [other.tempDir, "/tmp/anything", `${session.tempDir}/..`]) {
-      await writeFile(receiptFile, JSON.stringify({ ...receipt, tempDir: forged }));
-      await assert.rejects(run("stop", session.id), /refusing to remove/);
+      await assert.rejects(removeSessionDirs({ id: session.id, tempDir: forged }), /Refusing to remove .*not this session's temp dir/);
     }
     assert.equal(await gone(other.tempDir), false, "another session's temp dir stays");
+    assert.equal((await run("status", session.id))[0].state, "ready", "a refused removal leaves the session alone");
 
-    await restore();
+    // A receipt that can't be written undoes the reservation: no receiptless session dir, no temp dir.
+    const prefix = path.basename(session.tempDir).slice(0, -session.id.length);
+    await assert.rejects(reserveSession(["app"], (id, dir, ports) => ({ id, sessionDir: dir, ports, unwritable: 1n })), /BigInt/);
+    assert.equal((await readdir(path.join(state, "sessions"))).length, 2);
+    assert.equal((await readdir("/tmp")).filter((name) => name.startsWith(prefix)).length, 2);
+
     await run("stop", session.id);
     assert.ok(await gone(session.tempDir));
   } finally {
-    await restore?.().catch(() => undefined);
     await stopAll(run);
     await rm(base, { recursive: true, force: true });
   }

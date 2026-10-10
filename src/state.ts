@@ -31,9 +31,7 @@ const tempRoot = "/tmp";
 const tempPrefix = `lc-${createHash("sha256").update(stateRoot).digest("hex").slice(0, 8)}-`;
 const tempName = /^lc-[0-9a-f]{8}-([0-9a-f-]{36})$/;
 
-class ForeignTempDirError extends Error {
-  constructor(dir: string) { super(`Session temp dir is not the session's own; refusing to remove ${dir}`); }
-}
+class ForeignTempDirError extends Error { constructor(dir: string) { super(`Refusing to remove ${dir}: not this session's temp dir`); } }
 
 /** Delete a stopped session's temp dir, then its session dir; a temp dir not of this ID's fixed shape throws first. */
 export async function removeSessionDirs({ id, tempDir }: SessionReceipt): Promise<void> {
@@ -283,13 +281,17 @@ export async function reserveSession(
     }
     const id = randomUUID();
     const dir = sessionPath(id);
-    await fs.mkdir(path.join(dir, "data"), { recursive: true, mode: 0o700 });
-    // Not recursive, so an existing path (another user's, a planted link) fails; chmod because the umask masks mkdir.
-    const tempDir = path.join(tempRoot, tempPrefix + id);
-    await fs.mkdir(tempDir, { mode: 0o700 });
-    await fs.chmod(tempDir, 0o700);
-    const receipt = { ...makeReceipt(id, dir, ports, { ...ports, ...bindPorts }), tempDir };
-    await writeReceipt(receipt);
+    const receipt = { ...makeReceipt(id, dir, ports, { ...ports, ...bindPorts }), tempDir: path.join(tempRoot, tempPrefix + id) };
+    try {
+      await fs.mkdir(path.join(dir, "data"), { recursive: true, mode: 0o700 });
+      await writeReceipt(receipt);
+      // Last, so the receipt always names it; not recursive, so an existing path fails; chmod as the umask masks mkdir.
+      await fs.mkdir(receipt.tempDir, { mode: 0o700 });
+      await fs.chmod(receipt.tempDir, 0o700);
+    } catch (error) {
+      await fs.rm(dir, { recursive: true, force: true });
+      throw error;
+    }
     return receipt;
   } finally {
     await release();

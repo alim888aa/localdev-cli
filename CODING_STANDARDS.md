@@ -17,7 +17,8 @@ whole repo.
   `proxy` and `adapter`, then `supervised` and `state`, then `listener`,
   `process-table`, `run-sync` and `checkout`. A lower owner never imports a
   higher one.
-- `test/` holds the tests and their fixtures. `dist/` is generated.
+- `test/` holds the tests and their fixtures; a suite with its own fixtures gets
+  a subfolder. `dist/` is generated.
 
 ## Shape
 
@@ -164,7 +165,7 @@ ratchet counts to `scripts/checks/baseline.json`. A strict rule fails on any
 finding; a ratchet count may only go down. Never weaken a check, add a
 suppression or raise the baseline to pass.
 
-- Build first, then run `node --test --test-concurrency=1 test/*.test.mjs`
+- Build first, then run `node --test --test-concurrency=1 'test/**/*.test.mjs'`
   (`pnpm check` does both).
 - Tests wait on observable state (status fields, proxy state, a settled
   promise), never a fixed wall-clock sleep.
