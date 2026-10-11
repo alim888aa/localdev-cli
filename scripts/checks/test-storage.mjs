@@ -123,6 +123,7 @@ export function testStorageFindings(file, text) {
       callback = declarationOf(callback);
       if (callback?.initializer) callback = callback.initializer;
     }
+    while (callback && ts.isParenthesizedExpression(callback)) callback = callback.expression;
     if (!callback || !ts.isFunctionLike(callback) || !callback.body) return 0;
     let result = 0;
     function executed(node) {

@@ -33,6 +33,9 @@ for (const [name, body] of [
   ["rejects receipt callback", `await assert.rejects(() => readFile(path.join(root, "sessions", id, "receipt.json")), { code: "ENOENT" });`],
   ["block callback directory probe", `await assert.rejects(async () => { await stat(path.join(root, "sessions", id)); }, { code: "ENOENT" });`],
   ["parenthesized assertion callback", `await assert.rejects((async () => stat(path.join(root, "sessions", id))), { code: "ENOENT" });`],
+  ["named parenthesized directory callback", `const probe = (() => stat(path.join(root, "sessions", id))); await assert.doesNotReject(probe);`],
+  ["named parenthesized receipt callback", `const probe = ((async () => readFile(path.join(root, "sessions", id, "receipt.json"))));
+    await assert.rejects(probe, { code: "ENOENT" });`],
   ["named assertion callback", `import { rejects as verify } from "node:assert/strict";
     const probe = async () => stat(path.join(root, "sessions", id)); await verify(probe, { code: "ENOENT" });`],
   ["synchronous existence callback", `assert.throws(() => fs.statSync(path.join(root, "sessions", id)));`],
@@ -58,6 +61,8 @@ for (const [name, body] of [
     await assert.rejects(stat(ready.tempDir), { code: "ENOENT" });`],
   ["public cleanup callback", `const ready = await run("startup"); await run("stop", ready.id);
     await assert.rejects(() => stat(ready.tempDir), { code: "ENOENT" });`],
+  ["named parenthesized public cleanup callback", `const ready = await run("startup"); await run("stop", ready.id);
+    const probe = ((async () => stat(ready.tempDir))); await assert.rejects(probe, { code: "ENOENT" });`],
   ["reservation callback cleanup", `let supplied; await reserveSession([], (id, sessionDir) => { supplied = sessionDir; throw new Error("rollback"); });
     await assert.rejects(stat(supplied), { code: "ENOENT" });`],
   ["malformed input setup", `const file = path.join(root, "sessions", id, "receipt.json");
