@@ -4,6 +4,7 @@ const PRIVATE_PATH = 1;
 const STORED_VALUE = 2;
 const reads = new Set(["readFile", "readFileSync", "readdir", "readdirSync"]);
 const probes = new Set(["access", "accessSync", "stat", "statSync", "lstat", "lstatSync", "exists", "existsSync"]);
+const callbackAssertions = new Set(["throws", "doesNotThrow", "rejects", "doesNotReject"]);
 const privateText = (text) => /(^|[/\\])sessions([/\\]|$)|(^|[/\\])receipt\.json(?:\.[a-z\d.-]+)?$/.test(text);
 
 function walk(node, visit) {
@@ -44,7 +45,7 @@ export function testStorageFindings(file, text) {
     if (!assigned.has(symbol)) assigned.set(symbol, []);
     assigned.get(symbol).push(node.right);
   });
-  const assertions = new Set();
+  const assertions = new Map();
   const assertionNamespaces = new Set();
   for (const statement of source.statements) {
     if (!ts.isImportDeclaration(statement) || !/^node:assert(?:\/strict)?$/.test(statement.moduleSpecifier.text)) continue;
@@ -52,7 +53,7 @@ export function testStorageFindings(file, text) {
     if (clause?.name) assertionNamespaces.add(checker.getSymbolAtLocation(clause.name));
     if (clause?.namedBindings && ts.isNamespaceImport(clause.namedBindings)) {
       assertionNamespaces.add(checker.getSymbolAtLocation(clause.namedBindings.name));
-    } else for (const item of clause?.namedBindings?.elements ?? []) assertions.add(checker.getSymbolAtLocation(item.name));
+    } else for (const item of clause?.namedBindings?.elements ?? []) assertions.set(checker.getSymbolAtLocation(item.name), (item.propertyName ?? item.name).text);
   }
 
   function declarationOf(node) {
@@ -114,13 +115,40 @@ export function testStorageFindings(file, text) {
     return result;
   }
 
+  function callbackValue(argument) {
+    if (!argument) return 0;
+    let callback = argument;
+    while (ts.isParenthesizedExpression(callback)) callback = callback.expression;
+    if (!callback || !ts.isFunctionLike(callback)) {
+      callback = declarationOf(callback);
+      if (callback?.initializer) callback = callback.initializer;
+    }
+    if (!callback || !ts.isFunctionLike(callback) || !callback.body) return 0;
+    let result = 0;
+    function executed(node) {
+      if (ts.isFunctionLike(node)) return;
+      if (ts.isCallExpression(node)) {
+        const name = ts.isPropertyAccessExpression(node.expression) ? node.expression.name.text : node.expression.getText();
+        const taint = value(node);
+        if (reads.has(name) || probes.has(name) || taint & STORED_VALUE) result |= taint;
+      }
+      if (ts.isReturnStatement(node) || ts.isThrowStatement(node) || ts.isIfStatement(node)) result |= value(node.expression);
+      ts.forEachChild(node, executed);
+    }
+    if (ts.isBlock(callback.body)) executed(callback.body);
+    else result = value(callback.body);
+    return result;
+  }
+
   const findings = [];
   walk(source, (node) => {
     if (!ts.isCallExpression(node)) return;
     const callee = node.expression;
     const symbol = checker.getSymbolAtLocation(ts.isPropertyAccessExpression(callee) ? callee.expression : callee);
     if (!assertions.has(symbol) && !assertionNamespaces.has(symbol)) return;
-    const taint = node.arguments.reduce((result, argument) => result | value(argument), 0);
+    let taint = node.arguments.reduce((result, argument) => result | value(argument), 0);
+    const operation = ts.isPropertyAccessExpression(callee) ? callee.name.text : assertions.get(symbol);
+    if (callbackAssertions.has(operation)) taint |= callbackValue(node.arguments[0]);
     if (!taint) return;
     const rule = "test/public-api";
     const line = source.getLineAndCharacterOfPosition(node.getStart()).line + 1;

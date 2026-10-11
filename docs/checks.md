@@ -16,6 +16,9 @@ The additional rules compare individual findings with that merge-base:
   reconstructed session directories. Use the owner's exports or built CLI
   output for behavior, and paths supplied by public results or reservation
   callbacks for cleanup.
+  Callbacks executed by Node's `throws`, `doesNotThrow`, `rejects` and
+  `doesNotReject` are assertion inputs too; unrelated synchronization callbacks
+  stay separate.
 - `imports/direction`: local imports between the owner layers listed in
   **Where code belongs** in `CODING_STANDARDS.md` cannot point upward. Owners
   outside that list remain subject to the boundaries lens's judgment.

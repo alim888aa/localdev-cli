@@ -29,6 +29,15 @@ for (const [name, body] of [
     assert.equal(receipt.state, "ready");`],
   ["named assertion alias", `import { equal as verify } from "node:assert/strict";
     verify(JSON.parse(await readFile(path.join(root, "sessions", id, "receipt.json"))).state, "failed");`],
+  ["doesNotReject directory callback", `await assert.doesNotReject(async () => stat(path.join(root, "sessions", id)));`],
+  ["rejects receipt callback", `await assert.rejects(() => readFile(path.join(root, "sessions", id, "receipt.json")), { code: "ENOENT" });`],
+  ["block callback directory probe", `await assert.rejects(async () => { await stat(path.join(root, "sessions", id)); }, { code: "ENOENT" });`],
+  ["parenthesized assertion callback", `await assert.rejects((async () => stat(path.join(root, "sessions", id))), { code: "ENOENT" });`],
+  ["named assertion callback", `import { rejects as verify } from "node:assert/strict";
+    const probe = async () => stat(path.join(root, "sessions", id)); await verify(probe, { code: "ENOENT" });`],
+  ["synchronous existence callback", `assert.throws(() => fs.statSync(path.join(root, "sessions", id)));`],
+  ["stored state in callback condition", `const receipt = JSON.parse(await readFile(path.join(root, "sessions", id, "receipt.json")));
+    assert.doesNotThrow(() => { if (receipt.state !== "failed") throw new Error("state"); });`],
 ]) {
   test(`rejects ${name}`, () => {
     const findings = check(body);
@@ -47,6 +56,8 @@ for (const [name, body] of [
     const w = await world(); const [receipt] = await w.run("status", id); assert.equal(receipt.state, "failed");`],
   ["public cleanup paths", `const ready = await run("startup"); await run("stop", ready.id);
     await assert.rejects(stat(ready.tempDir), { code: "ENOENT" });`],
+  ["public cleanup callback", `const ready = await run("startup"); await run("stop", ready.id);
+    await assert.rejects(() => stat(ready.tempDir), { code: "ENOENT" });`],
   ["reservation callback cleanup", `let supplied; await reserveSession([], (id, sessionDir) => { supplied = sessionDir; throw new Error("rollback"); });
     await assert.rejects(stat(supplied), { code: "ENOENT" });`],
   ["malformed input setup", `const file = path.join(root, "sessions", id, "receipt.json");
@@ -55,6 +66,14 @@ for (const [name, body] of [
   ["controlled synchronization", `const file = path.join(root, "sessions", id, "receipt.json");
     await waitUntil(async () => JSON.parse(await readFile(file)).faults.some(f => f.mode === "kill"));
     assert.equal((await run("status", id))[0].state, "stopping");`],
+  ["synchronization inside assertion callback", `const file = path.join(root, "sessions", id, "receipt.json");
+    await assert.doesNotReject(async () => {
+      await waitUntil(async () => JSON.parse(await readFile(file)).faults.some(f => f.mode === "kill"));
+      return run("stop", id);
+    });`],
+  ["malformed setup before public assertion callback", `const file = path.join(root, "sessions", id, "receipt.json");
+    const receipt = JSON.parse(await readFile(file)); await writeFile(file, JSON.stringify({ ...receipt, state: "failed" }));
+    await assert.rejects(() => run("stop", id), /ownership/);`],
   ["unrelated filesystem data", `assert.equal(await readFile(path.join(ready.dataDir, "seed.txt"), "utf8"), "ready");`],
 ]) test(`allows ${name}`, () => assert.deepEqual(check(body), []));
 
