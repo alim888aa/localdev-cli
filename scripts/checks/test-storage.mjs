@@ -16,7 +16,10 @@ function scopeOf(node) {
   for (let parent = node.parent; parent; parent = parent.parent) {
     if (ts.isCallExpression(parent) && /^(test|it|describe)$/.test(parent.expression.getText())) {
       scope.push(parent.arguments[0]?.getText() ?? "");
-    } else if (ts.isFunctionDeclaration(parent)) scope.push(parent.name?.text ?? "anonymous");
+    } else if (ts.isFunctionLike(parent)) {
+      const name = parent.name ?? parent.parent?.name;
+      if (name) scope.push(name.getText());
+    }
   }
   return scope.reverse().join("/");
 }
