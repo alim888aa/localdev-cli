@@ -168,6 +168,11 @@ ratchet counts to `scripts/checks/baseline.json`. A strict rule fails on any
 finding; a ratchet count may only go down. Never weaken a check, add a
 suppression or raise the baseline to pass.
 
+The check also rejects new private-storage test assertions, upward owner
+imports, process-entry imports, import cycles and folder growth against an
+explicit Git merge-base. See [Checker comparisons](docs/checks.md) for base
+selection, finding identities and the static analysis limits.
+
 - Build first, then run `node --test --test-concurrency=1 'test/**/*.test.mjs'`
   (`pnpm check` does both).
 - Tests wait on observable state (status fields, proxy state, a settled

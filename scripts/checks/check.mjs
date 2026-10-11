@@ -15,10 +15,22 @@ import {tmpdir} from "node:os";
 import {join} from "node:path";
 
 import {REPO_ROOT, measureRules} from "./rules.mjs";
+import {compareSnapshots, readComparison} from "./comparison.mjs";
 
 const BASELINE_PATH = join(REPO_ROOT, "scripts/checks/baseline.json");
 const SHOWN = 30;
 const writeMode = process.argv.includes("--write");
+let baseRef = process.env.LOCALDEV_CHECK_BASE ?? "origin/main";
+for (let index = 2; index < process.argv.length; index++) {
+  const argument = process.argv[index];
+  if (argument === "--write") continue;
+  if (argument === "--base" && process.argv[index + 1] && !process.argv[index + 1].startsWith("--")) {
+    baseRef = process.argv[++index];
+    continue;
+  }
+  console.error("Usage: pnpm check [--write] [--base <commit/ref>]");
+  process.exit(1);
+}
 const failures = [];
 
 function run(label, command, args) {
@@ -126,6 +138,16 @@ function show(rule, lines) {
 function rulesAndRatchet() {
   console.log("\n== strict rules and ratchet");
   const {strict, ratchet} = measureRules();
+  try {
+    const comparison = readComparison(REPO_ROOT, baseRef);
+    console.log(`  comparison: HEAD ${comparison.head}; merge-base ${comparison.base}; selected ${baseRef}`);
+    for (const finding of compareSnapshots(comparison.before, comparison.after)) {
+      (strict[finding.rule] ??= []).push(`${finding.file}${finding.line ? `:${finding.line}` : ""} ${finding.message}`);
+    }
+  } catch (error) {
+    failures.push("required base comparison");
+    console.log(`  ${error.message}`);
+  }
   Object.assign(ratchet, knipFindings());
 
   for (const [rule, lines] of Object.entries(strict)) {
