@@ -15,7 +15,8 @@ test("direction resolves emitted JS paths to TypeScript owners", () => {
   assert.deepEqual(compare({ ...after, "src/state.ts": "", "src/session.ts": `import "./state.js";` }), []);
 });
 
-for (const syntax of [`import "./guard.js";`, `export * from "./guard.js";`, `await import("./guard.js");`, `require("./guard.js");`]) {
+for (const syntax of [`import "./guard.js";`, `export * from "./guard.js";`, `await import("./guard.js");`, `require("./guard.js");`,
+  `import guard = require("./guard.js");`, `type Guard = import("./guard.js").Guard;`]) {
   test(`process entry fails for ${syntax}`, () => {
     const found = compare({ "src/session.ts": syntax, "src/guard.ts": "" });
     assert.ok(found.some((finding) => finding.rule === "imports/process-entry" && finding.line === 1));

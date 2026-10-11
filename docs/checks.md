@@ -23,7 +23,7 @@ The additional rules compare individual findings with that merge-base:
   `proxy-process` or `outbound-preload`. Tests importing their built `dist`
   files are checked against the corresponding source owners too.
 - `imports/cycle`: each local edge participating in a cycle is a finding.
-  Static imports, re-exports, literal `import()` and literal `require()` are
+  Static imports, re-exports, TypeScript import types/equals, literal `import()` and literal `require()` are
   resolved across local TypeScript/JavaScript extensions and directory indexes.
 - `size/folder-files`: a folder above ten direct handwritten files cannot be
   new or grow beyond its base count. This counts regular repository files,
